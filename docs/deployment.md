@@ -319,6 +319,41 @@ docker compose up -d --build
 docker run --rm golang:1.25-alpine sh -c 'GOPROXY=https://goproxy.cn,direct go env GOPROXY'
 ```
 
+### Docker 构建运行镜像 apt 很慢
+
+如果构建卡在类似下面这一步：
+
+```text
+[stage-2 7/8] RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
+```
+
+通常是服务器访问 Debian 官方源 `deb.debian.org` 很慢。当前 Dockerfile 已将运行镜像的 apt 源默认切换为阿里云镜像：
+
+```dockerfile
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com
+```
+
+拉取最新代码后重新构建即可：
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+如果想看更详细的构建输出，可以使用：
+
+```bash
+docker compose build --progress=plain
+docker compose up -d
+```
+
+如果你所在服务器访问阿里云镜像也慢，可以临时换成清华源构建：
+
+```bash
+docker compose build --build-arg DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn --progress=plain
+docker compose up -d
+```
+
 ### Docker Compose 提示变量未设置
 
 如果执行 `docker compose up -d --build` 时出现：

@@ -28,13 +28,28 @@ RUN go build -o /server .
 # 运行镜像：Next.js 对外监听 13000，Go 只在容器内部监听 18080。
 FROM node:22-bookworm-slim
 
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com
 WORKDIR /app
 COPY VERSION /app/VERSION
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY --from=api-build /server /app/server
 COPY --from=web-build /app/web /app/web
 ENV PROMPT_DATA_DIR=/app/data/prompts
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i \
+            -e "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" \
+            -e "s|http://security.debian.org|${DEBIAN_MIRROR}|g" \
+            /etc/apt/sources.list.d/debian.sources; \
+    elif [ -f /etc/apt/sources.list ]; then \
+        sed -i \
+            -e "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" \
+            -e "s|http://security.debian.org|${DEBIAN_MIRROR}|g" \
+            /etc/apt/sources.list; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /app/data/prompts
 
 EXPOSE 13000
