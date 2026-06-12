@@ -235,6 +235,7 @@ func scanAIImageResponseChunk(result *aiResponseCopyResult, text string, previou
 		"image.generation.result",
 		"image.edit.result",
 		"\"b64_json\"",
+		"\"partial_image_b64\"",
 		"\"url\"",
 		"\"image_url\"",
 	} {

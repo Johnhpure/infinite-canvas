@@ -178,6 +178,45 @@ function parseImagePayload(payload: ImageApiResponse, mime: string): GeneratedIm
     return images;
 }
 
+function parseJsonPayload<T>(text: string): T | null {
+    try {
+        return JSON.parse(text) as T;
+    } catch {
+        return null;
+    }
+}
+
+function unescapeJsonString(value: string) {
+    try {
+        return JSON.parse(`"${value}"`) as string;
+    } catch {
+        return value;
+    }
+}
+
+function extractQuotedValuesByKey(text: string, keys: string[]) {
+    const values: string[] = [];
+    keys.forEach((key) => {
+        const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const pattern = new RegExp(`"${escapedKey}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`, "g");
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(text))) {
+            const value = unescapeJsonString(match[1]).trim();
+            if (value) values.push(value);
+        }
+    });
+    return Array.from(new Set(values));
+}
+
+function parseImageTextPayload(text: string, mime: string): GeneratedImage[] {
+    const payload = parseJsonPayload<ImageApiResponse>(text);
+    if (payload) return parseImagePayload(payload, mime);
+    const sources = extractQuotedValuesByKey(text, ["b64_json", "image_url", "url"]);
+    const images = sources.map((source) => ({ id: nanoid(), dataUrl: normalizeImageSource(source, mime) }));
+    if (images.length) return images;
+    throw new ImageRequestError("图片接口响应解析失败", text);
+}
+
 function getStringRecordValue(record: Record<string, unknown>, key: string) {
     const value = record[key];
     return typeof value === "string" && value.trim() ? value.trim() : "";
@@ -220,6 +259,40 @@ function parseResponsesPayload(payload: ResponsesApiResponse, mime: string): Gen
     }
 
     return images;
+}
+
+function parseResponsesTextPayload(text: string, mime: string): GeneratedImage[] {
+    const payload = parseJsonPayload<ResponsesApiResponse>(text);
+    if (payload) return parseResponsesPayload(payload, mime);
+    const output: Record<string, unknown>[] = [];
+    const partialImages: string[] = [];
+    parseJsonDataPayloads(text).forEach((event) => {
+        if (event.type === "response.image_generation_call.partial_image") {
+            const b64 = getStringRecordValue(event, "partial_image_b64");
+            if (b64) partialImages.push(b64);
+        }
+        if (event.type === "response.image_generation_call.completed") {
+            output.push({ type: "image_generation_call", result: event.result, image_url: event.image_url, url: event.url });
+        }
+        const item = event.item;
+        if (item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).type === "image_generation_call") {
+            output.push(item as Record<string, unknown>);
+        }
+        const responsePayload = event.response;
+        if (responsePayload && typeof responsePayload === "object" && !Array.isArray(responsePayload)) {
+            output.push(...(((responsePayload as ResponsesApiResponse).output || []) as Record<string, unknown>[]));
+        }
+    });
+    const directSources = extractQuotedValuesByKey(text, ["result", "b64_json", "image_url", "url", "partial_image_b64"]);
+    const images = [
+        ...output.flatMap((item) => collectResponsesImageSources(item)),
+        ...directSources,
+        ...(partialImages.length ? [partialImages[partialImages.length - 1]] : []),
+    ]
+        .filter(Boolean)
+        .map((source) => ({ id: nanoid(), dataUrl: normalizeImageSource(source, mime) }));
+    if (images.length) return Array.from(new Map(images.map((image) => [image.dataUrl, image])).values());
+    throw new ImageRequestError("Responses API 响应解析失败", text);
 }
 
 function readAxiosError(error: unknown, fallback: string) {
@@ -296,6 +369,59 @@ async function requestWithTransientRetry(run: () => Promise<Response>, retries =
     throw lastError instanceof Error ? lastError : new Error("请求失败");
 }
 
+function readBalancedJson(text: string, start: number) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+        const char = text[index];
+        if (inString) {
+            if (escaped) {
+                escaped = false;
+            } else if (char === "\\") {
+                escaped = true;
+            } else if (char === "\"") {
+                inString = false;
+            }
+            continue;
+        }
+        if (char === "\"") {
+            inString = true;
+        } else if (char === "{") {
+            depth += 1;
+        } else if (char === "}") {
+            depth -= 1;
+            if (depth === 0) return text.slice(start, index + 1);
+        }
+    }
+    return "";
+}
+
+function parseJsonDataPayloads(text: string) {
+    const events: Record<string, unknown>[] = [];
+    let index = 0;
+    while (index < text.length) {
+        const dataIndex = text.indexOf("data:", index);
+        if (dataIndex < 0) break;
+        let start = dataIndex + 5;
+        while (/\s/.test(text[start] || "")) start += 1;
+        if (text.startsWith("[DONE]", start)) {
+            index = start + 6;
+            continue;
+        }
+        if (text[start] !== "{") {
+            index = start + 1;
+            continue;
+        }
+        const jsonText = readBalancedJson(text, start);
+        if (!jsonText) break;
+        const event = parseJsonPayload<Record<string, unknown>>(jsonText);
+        if (event) events.push(event);
+        index = start + jsonText.length;
+    }
+    return events;
+}
+
 function parseServerSentEventBlock(block: string) {
     const data = block
         .split(/\r?\n/)
@@ -303,8 +429,8 @@ function parseServerSentEventBlock(block: string) {
         .map((line) => line.slice(5).replace(/^ /, ""))
         .join("\n")
         .trim();
-    if (!data || data === "[DONE]") return null;
-    return JSON.parse(data) as Record<string, unknown>;
+    if (data && data !== "[DONE]") return [JSON.parse(data) as Record<string, unknown>];
+    return parseJsonDataPayloads(block);
 }
 
 async function readJsonServerSentEvents(response: Response, onEvent: (event: Record<string, unknown>) => void) {
@@ -315,19 +441,20 @@ async function readJsonServerSentEvents(response: Response, onEvent: (event: Rec
     const events: Record<string, unknown>[] = [];
 
     const processBlock = (block: string) => {
-        let event: Record<string, unknown> | null = null;
+        let parsedEvents: Record<string, unknown>[] = [];
         try {
-            event = parseServerSentEventBlock(block);
+            parsedEvents = parseServerSentEventBlock(block);
         } catch (error) {
             throw new ImageRequestError(error instanceof Error ? error.message : "流式响应解析失败", block);
         }
-        if (!event) return;
-        events.push(event);
-        const error = event.error;
-        if (error && typeof error === "object" && !Array.isArray(error) && typeof (error as { message?: unknown }).message === "string") {
-            throw new ImageRequestError((error as { message: string }).message, event);
-        }
-        onEvent(event);
+        parsedEvents.forEach((event) => {
+            events.push(event);
+            const error = event.error;
+            if (error && typeof error === "object" && !Array.isArray(error) && typeof (error as { message?: unknown }).message === "string") {
+                throw new ImageRequestError((error as { message: string }).message, event);
+            }
+            onEvent(event);
+        });
     };
 
     while (true) {
@@ -573,9 +700,9 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
                     const images = await parseImagesStreamResponse(response, mime);
                     return { images: images.map((img) => ({ ...img, seed: seedValue })), responseBody: summarizeGeneratedImages(images, "event-stream") };
                 }
-                const payload = (await response.json()) as ImageApiResponse;
-                const images = parseImagePayload(payload, mime);
-                return { images: images.map((img) => ({ ...img, seed: seedValue })), responseBody: stringifyLogPayload(payload) };
+                const text = await response.text();
+                const images = parseImageTextPayload(text, mime);
+                return { images: images.map((img) => ({ ...img, seed: seedValue })), responseBody: stringifyLogPayload(parseJsonPayload(text) || summarizeGeneratedImages(images, "text-fallback")) };
             },
         );
     }
@@ -617,8 +744,9 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
                 const images = await parseImagesStreamResponse(response, mime);
                 return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
-            const payload = (await response.json()) as ImageApiResponse;
-            return { images: parseImagePayload(payload, mime), responseBody: stringifyLogPayload(payload) };
+            const text = await response.text();
+            const images = parseImageTextPayload(text, mime);
+            return { images, responseBody: stringifyLogPayload(parseJsonPayload(text) || summarizeGeneratedImages(images, "text-fallback")) };
         },
     );
 }
@@ -664,8 +792,9 @@ async function requestImageEditSingle(config: AiConfig, prompt: string, referenc
                 const images = await parseImagesStreamResponse(response, mime);
                 return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
-            const payload = (await response.json()) as ImageApiResponse;
-            return { images: parseImagePayload(payload, mime), responseBody: stringifyLogPayload(payload) };
+            const text = await response.text();
+            const images = parseImageTextPayload(text, mime);
+            return { images, responseBody: stringifyLogPayload(parseJsonPayload(text) || summarizeGeneratedImages(images, "text-fallback")) };
         },
     );
 }
@@ -732,8 +861,9 @@ async function requestResponsesSingle(config: AiConfig, prompt: string, inputIma
                 const images = await parseResponsesStreamResponse(response, mime);
                 return { images, responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
-            const payload = (await response.json()) as ResponsesApiResponse;
-            return { images: parseResponsesPayload(payload, mime), responseBody: stringifyLogPayload(payload) };
+            const text = await response.text();
+            const images = parseResponsesTextPayload(text, mime);
+            return { images, responseBody: stringifyLogPayload(parseJsonPayload(text) || summarizeGeneratedImages(images, "text-fallback")) };
         },
     );
 }
@@ -744,6 +874,14 @@ async function requestAndParseImages(config: AiConfig, endpoint: string, request
     try {
         const response = await fetchResponse();
         if (!response.ok) {
+            try {
+                const parsed = await parseResponse(response.clone());
+                logged = true;
+                void writeLocalAICallLog(config, endpoint, startedAt, response.status, timeoutSeconds, stringifyLogPayload(requestBody), parsed.responseBody, "");
+                return parsed.images;
+            } catch {
+                // Fall through to the normal error detail path when the body does not contain usable images.
+            }
             const error = await fetchErrorDetail(response, "请求失败");
             logged = true;
             void writeLocalAICallLog(config, endpoint, startedAt, response.status, timeoutSeconds, stringifyLogPayload(requestBody), stringifyLogPayload(error.detail || error.message), error.message);
@@ -998,9 +1136,9 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
                 const images = await parseImagesStreamResponse(response, mime);
                 return { images: images.map((img) => ({ ...img, seed: seedValue })), responseBody: summarizeGeneratedImages(images, "event-stream") };
             }
-            const payload = (await response.json()) as ImageApiResponse;
-            const images = parseImagePayload(payload, mime);
-            return { images: images.map((img) => ({ ...img, seed: seedValue })), responseBody: stringifyLogPayload(payload) };
+            const text = await response.text();
+            const images = parseImageTextPayload(text, mime);
+            return { images: images.map((img) => ({ ...img, seed: seedValue })), responseBody: stringifyLogPayload(parseJsonPayload(text) || summarizeGeneratedImages(images, "text-fallback")) };
         },
     );
 }
