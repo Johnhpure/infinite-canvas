@@ -329,7 +329,7 @@ func AdjustUserCredits(id string, credits int) (model.User, error) {
 	return user, err
 }
 
-func ConsumeUserCredits(userID string, modelName string, credits int, path string) error {
+func ConsumeUserCredits(userID string, modelName string, credits int, path string, channel model.ModelChannel) error {
 	if credits <= 0 {
 		return nil
 	}
@@ -340,21 +340,22 @@ func ConsumeUserCredits(userID string, modelName string, credits int, path strin
 	if !ok {
 		return safeMessageError{message: "算力点不足"}
 	}
-	extra, _ := json.Marshal(map[string]string{"model": modelName, "path": path})
+	channelName := strings.TrimSpace(channel.Name)
+	extra, _ := json.Marshal(map[string]string{"model": modelName, "path": path, "channelId": channel.ID, "channelName": channelName})
 	_, err = repository.SaveCreditLog(model.CreditLog{
 		ID:        newID("credit"),
 		UserID:    userID,
 		Type:      model.CreditLogTypeAIConsume,
 		Amount:    -credits,
 		Balance:   user.Credits,
-		Remark:    "调用模型 " + modelName,
+		Remark:    creditRemark("调用模型", modelName, channelName),
 		Extra:     string(extra),
 		CreatedAt: now(),
 	})
 	return err
 }
 
-func RefundUserCredits(userID string, modelName string, credits int, path string) error {
+func RefundUserCredits(userID string, modelName string, credits int, path string, channel model.ModelChannel) error {
 	if credits <= 0 {
 		return nil
 	}
@@ -365,18 +366,27 @@ func RefundUserCredits(userID string, modelName string, credits int, path string
 	if !ok {
 		return safeMessageError{message: "用户不存在"}
 	}
-	extra, _ := json.Marshal(map[string]string{"model": modelName, "path": path})
+	channelName := strings.TrimSpace(channel.Name)
+	extra, _ := json.Marshal(map[string]string{"model": modelName, "path": path, "channelId": channel.ID, "channelName": channelName})
 	_, err = repository.SaveCreditLog(model.CreditLog{
 		ID:        newID("credit"),
 		UserID:    userID,
 		Type:      model.CreditLogTypeAIRefund,
 		Amount:    credits,
 		Balance:   user.Credits,
-		Remark:    "模型调用失败返还 " + modelName,
+		Remark:    creditRemark("模型调用失败返还", modelName, channelName),
 		Extra:     string(extra),
 		CreatedAt: now(),
 	})
 	return err
+}
+
+func creditRemark(action string, modelName string, channelName string) string {
+	remark := action + " " + modelName
+	if strings.TrimSpace(channelName) != "" {
+		remark += "（渠道 " + strings.TrimSpace(channelName) + "）"
+	}
+	return remark
 }
 
 func ListCreditLogs(q model.Query) (model.CreditLogList, error) {

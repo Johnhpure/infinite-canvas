@@ -142,16 +142,21 @@ function createImageRequestParams(config: AiConfig): ImageRequestParams {
     };
 }
 
-function normalizeBase64Image(value: string, fallbackMime: string) {
-    return value.startsWith("data:") ? value : `data:${fallbackMime};base64,${value}`;
+function normalizeImageSource(value: string, fallbackMime: string) {
+    if (value.startsWith("data:")) return value;
+    if (/^https?:\/\//i.test(value)) return value;
+    return `data:${fallbackMime};base64,${value}`;
 }
 
 function resolveImageDataUrl(item: Record<string, unknown>, mime: string) {
     if (typeof item.b64_json === "string" && item.b64_json) {
-        return normalizeBase64Image(item.b64_json, mime);
+        return normalizeImageSource(item.b64_json, mime);
     }
     if (typeof item.url === "string" && item.url) {
         return item.url;
+    }
+    if (typeof item.image_url === "string" && item.image_url) {
+        return item.image_url;
     }
     return null;
 }
@@ -184,16 +189,16 @@ function collectResponsesImageStrings(value: unknown, depth = 0): string[] {
     if (Array.isArray(value)) return value.flatMap((item) => collectResponsesImageStrings(item, depth + 1));
     if (typeof value !== "object") return [];
     const record = value as Record<string, unknown>;
-    return ["result", "b64_json", "base64", "image", "image_data", "data"].flatMap((key) => collectResponsesImageStrings(record[key], depth + 1));
+    return ["result", "b64_json", "base64", "image", "image_url", "url", "image_data", "data", "content", "output"].flatMap((key) => collectResponsesImageStrings(record[key], depth + 1));
 }
 
-function getResponsesImageResultBase64(result: unknown) {
+function getResponsesImageResultSource(result: unknown) {
     return collectResponsesImageStrings(result)[0] || "";
 }
 
-function collectResponsesImageBase64(item: Record<string, unknown>) {
+function collectResponsesImageSources(item: Record<string, unknown>) {
     const values: string[] = [];
-    const result = getResponsesImageResultBase64(item.result);
+    const result = getResponsesImageResultSource(item.result);
     if (result) values.push(result);
     values.push(...collectResponsesImageStrings(item));
     return Array.from(new Set(values));
@@ -206,9 +211,9 @@ function parseResponsesPayload(payload: ResponsesApiResponse, mime: string): Gen
     const images =
         payload.output
             ?.filter((item) => item.type === "image_generation_call")
-            .flatMap((item) => collectResponsesImageBase64(item))
+            .flatMap((item) => collectResponsesImageSources(item))
             .filter(Boolean)
-            .map((b64) => ({ id: nanoid(), dataUrl: normalizeBase64Image(b64, mime) })) || [];
+            .map((source) => ({ id: nanoid(), dataUrl: normalizeImageSource(source, mime) })) || [];
 
     if (images.length === 0) {
         throw new ImageRequestError("Responses API 没有返回图片", payload);
@@ -275,7 +280,7 @@ function retryDelay(attempt: number) {
     return 700 * attempt;
 }
 
-async function requestWithTransientRetry(run: () => Promise<Response>, retries = 2) {
+async function requestWithTransientRetry(run: () => Promise<Response>, retries = 0) {
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt += 1) {
         try {
@@ -374,6 +379,9 @@ async function parseResponsesStreamResponse(response: Response, mime: string): P
             if (b64) partialImages.push(b64);
             return;
         }
+        if (event.type === "response.image_generation_call.completed") {
+            output.push({ type: "image_generation_call", result: event.result, image_url: event.image_url, url: event.url });
+        }
         const responsePayload = event.response;
         if (responsePayload && typeof responsePayload === "object" && !Array.isArray(responsePayload)) {
             completedPayload = responsePayload as ResponsesApiResponse;
@@ -383,8 +391,9 @@ async function parseResponsesStreamResponse(response: Response, mime: string): P
             output.push(item as Record<string, unknown>);
         }
     });
+    const combinedOutput = [...((completedPayload?.output || []) as Record<string, unknown>[]), ...output];
     try {
-        return parseResponsesPayload(completedPayload || { output }, mime);
+        return parseResponsesPayload({ ...(completedPayload || {}), output: combinedOutput }, mime);
     } catch (error) {
         if (!partialImages.length) {
             throw new ImageRequestError(error instanceof Error ? error.message : "Responses API 没有返回图片", {
@@ -394,7 +403,7 @@ async function parseResponsesStreamResponse(response: Response, mime: string): P
             });
         }
         const lastPartialImage = partialImages[partialImages.length - 1];
-        return [{ id: nanoid(), dataUrl: normalizeBase64Image(lastPartialImage, mime) }];
+        return [{ id: nanoid(), dataUrl: normalizeImageSource(lastPartialImage, mime) }];
     }
 }
 
@@ -766,6 +775,7 @@ async function requestImages(config: AiConfig & { seedIndex?: number; seedCount?
     if (references.length && isAgnesImageModel(config.model) && !options.maskDataUrl) {
         return requestAgnesImageEdit(config, prompt, references, params);
     }
+    if (references.length && options.maskDataUrl) return requestImageEditSingle(config, prompt, references, params, options.maskDataUrl);
     if (config.apiMode === "responses" && !options.maskDataUrl) return requestResponsesSingle(config, prompt, inputImageDataUrls, params);
     return references.length ? requestImageEditSingle(config, prompt, references, params, options.maskDataUrl) : requestImageGenerationSingle(config, prompt, params);
 }

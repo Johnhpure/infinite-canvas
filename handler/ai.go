@@ -68,7 +68,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
-	if err := service.ConsumeUserCredits(user.ID, modelName, credits, path); err != nil {
+	if err := service.ConsumeUserCredits(user.ID, modelName, credits, path, channel); err != nil {
 		FailError(w, err)
 		return
 	}
@@ -83,7 +83,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Credits:         credits,
 		RequestBody:     summarizeAIRequest(body, contentType),
 	}, func() {
-		if err := service.RefundUserCredits(user.ID, modelName, credits, path); err != nil {
+		if err := service.RefundUserCredits(user.ID, modelName, credits, path, channel); err != nil {
 			log.Printf("AI proxy refund credits failed: user=%s model=%s credits=%d err=%v", user.ID, modelName, credits, err)
 		}
 	})
@@ -109,7 +109,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 			onFailure()
 		}
 		saveAIProxyLog(logContext, 0, "", err.Error())
-		Fail(w, "AI 接口请求失败")
+		FailWithStatus(w, http.StatusBadGateway, readUpstreamAIErrorMessage([]byte(err.Error()), http.StatusBadGateway))
 		return
 	}
 	defer response.Body.Close()
@@ -121,7 +121,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 			onFailure()
 		}
 		saveAIProxyLog(logContext, response.StatusCode, string(payload), strings.TrimSpace(string(payload)))
-		Fail(w, readUpstreamAIErrorMessage(payload, response.StatusCode))
+		FailWithStatus(w, response.StatusCode, readUpstreamAIErrorMessage(payload, response.StatusCode))
 		return
 	}
 

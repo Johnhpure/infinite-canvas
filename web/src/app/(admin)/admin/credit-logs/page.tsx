@@ -18,6 +18,15 @@ const creditLogTypeLabels: Record<string, string> = {
     membership_grant: "会员赠送",
 };
 
+function readCreditLogExtra(extra?: string) {
+    if (!extra) return {} as { channelName?: string; channelId?: string };
+    try {
+        return JSON.parse(extra) as { channelName?: string; channelId?: string };
+    } catch {
+        return {} as { channelName?: string; channelId?: string };
+    }
+}
+
 export default function AdminCreditLogsPage() {
     const { logs, keyword, page, pageSize, total, isLoading, searchLogs, changePage, changePageSize, resetFilters, refreshLogs, saveLog: saveAdminLog, deleteLog } = useAdminCreditLogs();
     const [form] = Form.useForm<CreditLogFormValues>();
@@ -72,7 +81,16 @@ export default function AdminCreditLogsPage() {
             title: "备注",
             dataIndex: "remark",
             ellipsis: true,
-            render: (_, item) => <Typography.Text type="secondary">{item.remark || "-"}</Typography.Text>,
+            render: (_, item) => {
+                const extra = readCreditLogExtra(item.extra);
+                const channel = extra.channelName || extra.channelId || "";
+                return (
+                    <Space size={6}>
+                        <Typography.Text type="secondary">{item.remark || "-"}</Typography.Text>
+                        {channel ? <Tag className="m-0">渠道 {channel}</Tag> : null}
+                    </Space>
+                );
+            },
         },
         {
             title: "创建时间",

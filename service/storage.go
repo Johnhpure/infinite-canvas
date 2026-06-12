@@ -446,13 +446,13 @@ func DraftCreativeWorkflow(ctx context.Context, request WorkflowAgentDraftReques
 	credits, _ := ModelCost(modelName)
 	chargedCredits := request.ChannelMode != "local"
 	if chargedCredits {
-		if err := ConsumeUserCredits(user.ID, modelName, credits, "/workflows/agent-draft"); err != nil {
+		if err := ConsumeUserCredits(user.ID, modelName, credits, "/workflows/agent-draft", channel); err != nil {
 			return WorkflowAgentDraftResponse{}, err
 		}
 	}
 	refundCredits := func() {
 		if chargedCredits {
-			_ = RefundUserCredits(user.ID, modelName, credits, "/workflows/agent-draft")
+			_ = RefundUserCredits(user.ID, modelName, credits, "/workflows/agent-draft", channel)
 		}
 	}
 	body, _ := json.Marshal(map[string]any{
