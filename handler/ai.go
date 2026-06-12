@@ -45,13 +45,14 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "未登录或权限不足")
 		return
 	}
-	credits, err := service.ModelCost(modelName)
+	unitCredits, err := service.ModelCost(modelName)
 	if err != nil {
 		log.Printf("AI proxy read model cost failed: model=%s err=%v", modelName, err)
 		Fail(w, "AI 接口请求失败")
 		return
 	}
-	credits *= readAIRequestCount(body, contentType)
+	requestCount := readAIRequestCount(body, contentType)
+	credits := unitCredits * requestCount
 	channel, err := service.SelectModelChannelForModel(modelName, r.Header.Get("X-Model-Channel-ID"))
 	if err != nil {
 		log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
@@ -81,6 +82,8 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		UserID:          user.ID,
 		UserDisplayName: firstNonEmpty(user.DisplayName, user.Username),
 		Credits:         credits,
+		UnitCredits:     unitCredits,
+		ExpectImage:     isImageAIRequest(path, body),
 		RequestBody:     summarizeAIRequest(body, contentType),
 	}, func() {
 		if err := service.RefundUserCredits(user.ID, modelName, credits, path, channel); err != nil {
@@ -98,7 +101,16 @@ type aiLogContext struct {
 	UserID          string
 	UserDisplayName string
 	Credits         int
+	UnitCredits     int
+	ExpectImage     bool
 	RequestBody     string
+}
+
+type aiResponseCopyResult struct {
+	Body         string
+	ImageCount   int
+	HasError     bool
+	ErrorMessage string
 }
 
 func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.ModelChannel, logContext aiLogContext, onFailure func()) {
@@ -108,7 +120,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 		if onFailure != nil {
 			onFailure()
 		}
-		saveAIProxyLog(logContext, 0, "", err.Error())
+		saveAIProxyLog(logContext, 0, "", err.Error(), 0)
 		FailWithStatus(w, http.StatusBadGateway, readUpstreamAIErrorMessage([]byte(err.Error()), http.StatusBadGateway))
 		return
 	}
@@ -120,7 +132,7 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 		if onFailure != nil {
 			onFailure()
 		}
-		saveAIProxyLog(logContext, response.StatusCode, string(payload), strings.TrimSpace(string(payload)))
+		saveAIProxyLog(logContext, response.StatusCode, string(payload), strings.TrimSpace(string(payload)), 0)
 		FailWithStatus(w, response.StatusCode, readUpstreamAIErrorMessage(payload, response.StatusCode))
 		return
 	}
@@ -134,34 +146,60 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 		}
 	}
 	w.WriteHeader(response.StatusCode)
-	responseBody := copyAIResponseBody(w, response.Body)
-	saveAIProxyLog(logContext, response.StatusCode, responseBody, "")
+	result := copyAIResponseBody(w, response.Body, logContext.ExpectImage)
+	status := response.StatusCode
+	errorMessage := ""
+	chargedCredits := logContext.Credits
+	if logContext.ExpectImage {
+		if result.HasError || result.ImageCount <= 0 {
+			status = http.StatusBadGateway
+			errorMessage = firstNonEmpty(result.ErrorMessage, "AI 接口未返回有效图片")
+			chargedCredits = 0
+			if onFailure != nil {
+				onFailure()
+			}
+		} else if logContext.UnitCredits > 0 && result.ImageCount*logContext.UnitCredits < chargedCredits {
+			refundCredits := chargedCredits - result.ImageCount*logContext.UnitCredits
+			chargedCredits -= refundCredits
+			_ = service.RefundUserCredits(logContext.UserID, logContext.Model, refundCredits, logContext.Endpoint, logContext.Channel)
+		}
+	}
+	saveAIProxyLog(logContext, status, result.Body, errorMessage, chargedCredits)
 }
 
-func copyAIResponseBody(w http.ResponseWriter, body io.Reader) string {
+func copyAIResponseBody(w http.ResponseWriter, body io.Reader, scanImageResult bool) aiResponseCopyResult {
 	flusher, canFlush := w.(http.Flusher)
 	buffer := make([]byte, 32*1024)
 	var logBuffer strings.Builder
+	result := aiResponseCopyResult{}
+	tail := ""
 	for {
 		n, err := body.Read(buffer)
 		if n > 0 {
 			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
-				return logBuffer.String()
+				result.Body = logBuffer.String()
+				return result
 			}
+			chunk := string(buffer[:n])
 			if logBuffer.Len() < 64*1024 {
 				_, _ = logBuffer.Write(buffer[:min(n, 64*1024-logBuffer.Len())])
+			}
+			if scanImageResult {
+				scanAIImageResponseChunk(&result, tail+chunk, len(tail))
+				tail = trailingText(tail+chunk, 256)
 			}
 			if canFlush {
 				flusher.Flush()
 			}
 		}
 		if err != nil {
-			return logBuffer.String()
+			result.Body = logBuffer.String()
+			return result
 		}
 	}
 }
 
-func saveAIProxyLog(context aiLogContext, status int, responseBody string, errorMessage string) {
+func saveAIProxyLog(context aiLogContext, status int, responseBody string, errorMessage string, credits int) {
 	if context.StartedAt.IsZero() {
 		context.StartedAt = time.Now()
 	}
@@ -175,11 +213,73 @@ func saveAIProxyLog(context aiLogContext, status int, responseBody string, error
 		ChannelName:     context.Channel.Name,
 		Status:          status,
 		DurationMs:      time.Since(context.StartedAt).Milliseconds(),
-		Credits:         context.Credits,
+		Credits:         credits,
 		RequestBody:     context.RequestBody,
 		ResponseBody:    responseBody,
 		Error:           errorMessage,
 	})
+}
+
+func isImageAIRequest(path string, body []byte) bool {
+	if strings.HasPrefix(path, "/images/") {
+		return true
+	}
+	return path == "/responses" && bytes.Contains(body, []byte("image_generation"))
+}
+
+func scanAIImageResponseChunk(result *aiResponseCopyResult, text string, previousTailLength int) {
+	for _, marker := range []string{
+		"response.image_generation_call.completed",
+		"image_generation.completed",
+		"image_edit.completed",
+		"image.generation.result",
+		"image.edit.result",
+		"\"b64_json\"",
+		"\"url\"",
+		"\"image_url\"",
+	} {
+		result.ImageCount += countNewMarkerOccurrences(text, marker, previousTailLength)
+	}
+	for _, marker := range []string{
+		"event: error",
+		"response.failed",
+		"\"status\":\"failed\"",
+		"\"status\": \"failed\"",
+		"stream_read_error",
+		"upstream_error",
+		"\"type\":\"api_error\"",
+		"\"type\": \"api_error\"",
+	} {
+		if strings.Contains(text, marker) {
+			result.HasError = true
+			result.ErrorMessage = "AI 返回流包含失败事件"
+			return
+		}
+	}
+}
+
+func countNewMarkerOccurrences(text string, marker string, previousTailLength int) int {
+	count := 0
+	minIndex := max(0, previousTailLength-len(marker)+1)
+	offset := 0
+	for {
+		index := strings.Index(text[offset:], marker)
+		if index < 0 {
+			return count
+		}
+		absolute := offset + index
+		if absolute >= minIndex {
+			count++
+		}
+		offset = absolute + len(marker)
+	}
+}
+
+func trailingText(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	return text[len(text)-limit:]
 }
 
 func firstNonEmpty(values ...string) string {
