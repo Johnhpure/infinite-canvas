@@ -1901,6 +1901,7 @@ function HistoryLogCard({
 }) {
     const displayImages = log.images.filter((image) => Boolean(image.dataUrl));
     const firstImage = displayImages[0];
+    const totalImageBytes = displayImages.reduce((total, image) => total + (Number(image.bytes) || 0), 0);
     const [expanded, setExpanded] = useState(false);
     const [categoryOpen, setCategoryOpen] = useState(false);
     const [categoryName, setCategoryName] = useState("");
@@ -1990,6 +1991,8 @@ function HistoryLogCard({
                     <Tag className="m-0 text-[10px]">{log.config.size || "auto"}</Tag>
                     <Tag className="m-0 text-[10px]">{log.config.quality || "auto"}</Tag>
                     <Tag className="m-0 text-[10px]">{log.config.outputFormat || "png"}</Tag>
+                    {firstImage?.bytes ? <Tag className="m-0 text-[10px]">{formatBytes(firstImage.bytes)}</Tag> : null}
+                    {displayImages.length > 1 && totalImageBytes ? <Tag className="m-0 text-[10px]">总计 {formatBytes(totalImageBytes)}</Tag> : null}
                     {(log.config.outputFormat || "png") !== "png" ? <Tag className="m-0 text-[10px]">压缩 {log.config.outputCompression || "100"}</Tag> : null}
                     <Tag className="m-0 text-[10px]">审核 {log.config.moderation || "auto"}</Tag>
                     {log.config.streamImages ? <Tag className="m-0 text-[10px]">流式 {log.config.streamPartialImages || "1"}</Tag> : null}

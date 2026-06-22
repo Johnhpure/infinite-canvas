@@ -2,7 +2,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 
 import { DEFAULT_PORT, ensureCanvasWorkspace, loadConfig, saveConfig, updateCanvasWorkspace, type CanvasAgentConfig } from "./config.js";
 import { CanvasSession } from "./canvas-session.js";
-import { archiveCodexThread, listCodexThreads, readCodexThread, resumeCodexThread, runClaudeTurn, runCodexTurn, startCodexThread, verifyCodexThreadWorkspace, withAgentPrompt } from "./agents.js";
+import { archiveCodexThread, listCodexThreads, readCodexThread, resumeCodexThread, runClaudeTurn, runCodexTurn, startCodexThread, stopCodexTurn, verifyCodexThreadWorkspace, withAgentPrompt } from "./agents.js";
 import type { AgentAttachment } from "./types.js";
 
 export function startHttpServer() {
@@ -86,6 +86,10 @@ export function startHttpServer() {
         void runCodexTurn(withAgentPrompt(String(req.body?.prompt || "")), emit, attachments, { threadId, cwd: workspace.workspacePath });
         res.json({ ok: true, threadId });
     }));
+    app.post("/agent/codex/stop", (_req, res) => {
+        const stopped = stopCodexTurn(emit);
+        res.json({ ok: true, stopped });
+    });
     app.post("/agent/claude/turn", (req, res) => {
         runClaudeTurn(withAgentPrompt(String(req.body?.prompt || "")), emit);
         res.json({ ok: true });

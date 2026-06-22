@@ -17,6 +17,7 @@ type AgentHistoryMessage = { id: string; role: "user" | "assistant" | "tool" | "
 let codexQueue: Promise<unknown> = Promise.resolve();
 let codexApp: CodexAppClient | null = null;
 let codexThreadId = "";
+const STOP_TURN_MESSAGE = "已停止当前对话";
 const canvasAgentMcp = canvasAgentMcpCommand();
 const require = createRequire(import.meta.url);
 
@@ -48,6 +49,9 @@ async function runCodexTurnNow(prompt: string, emit: AgentEmit, attachments: Age
             await codexApp.startTurn(codexThreadId, prompt, files);
         }
     } catch (error) {
+        if (errorMessage(error) === STOP_TURN_MESSAGE) {
+            return;
+        }
         emit("agent_error", { message: errorMessage(error) });
     } finally {
         await Promise.all(files.map((file) => fs.unlink(file).catch(() => undefined)));
@@ -60,6 +64,16 @@ export async function startCodexThread(emit: AgentEmit, cwd?: string) {
     codexThreadId = String(field(thread, "id") || "");
     if (codexThreadId) emit("agent_event", { agent: "codex", type: "thread.started", thread_id: codexThreadId });
     return thread;
+}
+
+export function stopCodexTurn(emit: AgentEmit) {
+    if (!codexApp) return false;
+    codexApp.stop(STOP_TURN_MESSAGE);
+    codexApp = null;
+    codexThreadId = "";
+    emit("agent_event", { agent: "codex", type: "turn.failed", message: STOP_TURN_MESSAGE });
+    emit("agent_done", { agent: "codex", stopped: true });
+    return true;
 }
 
 export async function resumeCodexThread(emit: AgentEmit, threadId: string, cwd?: string) {
@@ -287,6 +301,11 @@ class CodexAppClient {
         [...this.pending.values(), ...this.activeTurns.values()].forEach((item) => item.reject(new Error(message)));
         this.pending.clear();
         this.activeTurns.clear();
+    }
+
+    stop(message: string) {
+        this.failAll(message);
+        this.child.kill();
     }
 }
 

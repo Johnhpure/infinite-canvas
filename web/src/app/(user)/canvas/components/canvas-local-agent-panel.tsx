@@ -195,6 +195,21 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
         }
     };
 
+    const stopCurrentTurn = async () => {
+        if (!connected || (!sending && !waiting)) return;
+        setAgentState({ activity: "停止中" });
+        try {
+            const res = await fetch(`${endpoint}/agent/codex/stop?token=${encodeURIComponent(token)}`, { method: "POST" });
+            if (!res.ok) throw new Error("停止当前对话失败");
+            setAgentState({ activity: "已停止", waiting: false, sending: false, pendingTool: null });
+            addEventLog("已停止当前对话", { status: res.status });
+        } catch (error) {
+            setAgentState({ activity: "停止失败" });
+            addEventLog("停止失败", error);
+            message.error(error instanceof Error ? error.message : "停止当前对话失败");
+        }
+    };
+
     const addAttachments = async (files: FileList | File[] | null) => {
         if (!files) return;
         const images = Array.from(files).filter((file) => file.type.startsWith("image/"));
@@ -535,6 +550,7 @@ export function CanvasLocalAgentPanel({ snapshot, canUndoOps, collapsed, embedde
                         theme={theme}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}
+                        onStop={stopCurrentTurn}
                         onAddFiles={addAttachments}
                         onRemoveAttachment={removeAttachment}
                         left={attachments.length ? <span className="text-[11px]" style={{ color: theme.node.muted }}>{formatBytes(attachmentPayloadBytes(attachments))} / 30MB</span> : null}
