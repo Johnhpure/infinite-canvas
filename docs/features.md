@@ -55,6 +55,13 @@ docker compose up -d --build
 - `/v1/chat/completions`：文本问答和带图问答。
 - `/v1/responses`：Responses API 文本/图像相关调用。
 
+模型渠道支持 OpenAI 和 Gemini 两种协议：
+
+- OpenAI 协议保持原有 `/models`、`/images/generations`、`/images/edits`、`/chat/completions` 和 `/responses` 调用结构。
+- Gemini 协议会把前端现有请求转换为 Gemini `generateContent` / `streamGenerateContent` 格式，再把返回结果转换回前端现有结构。
+- Gemini 支持文本问答、文生图、参考图图生图和 Agent 工具调用。
+- Gemini 暂不支持蒙版局部重绘；选择 Gemini 渠道执行带 mask 的局部编辑时会直接返回明确错误，不降级到其他接口。
+
 配置弹窗和后台管理的“拉取模型列表”统一通过后端 `/api/admin/settings/channel-models` 请求渠道 `/models`。如果某个服务不提供 `/models`，需要手动增加模型名。
 
 生图工作台支持：
@@ -64,6 +71,22 @@ docker compose up -d --build
 - 历史结果和实时结果统一展示。
 - 文本提示词、参考图、本地上传和“我的素材”复用。
 - 图片结果下载到本地、保存到“我的素材”和账号历史同步。
+
+画布生成支持停止：
+
+- 配置节点和提示词浮层在生成中会把“开始生成”切换为“停止”。
+- 停止会取消浏览器请求，并尽量让后端代理中断上游请求。
+- 用户主动停止不会把节点标记为生成失败，节点会恢复为空闲状态。
+
+## Canvas Agent
+
+当前分支合入上游 Canvas Agent 的纯生图子集：
+
+- 新增 `canvas-agent` 本地子项目，提供本机 HTTP/SSE 和 MCP 能力。
+- 画布助手的 Agent 模式可以连接本地 Agent，也可以通过网页 Agent Loop 调用当前文本模型渠道。
+- 网页 Agent 工具只保留纯生图相关能力：读取画布、读取选区、创建文本节点、创建生图流程、选择节点、触发文本/图片生成。
+- 本地 Agent ops 只接受文本、图片和生成配置节点，不包含视频/音频节点或工具。
+- WebDAV、视频/音频、Seedance 和上游纯前端化架构未合入当前纯生图分支。
 
 ## 创作工作流
 

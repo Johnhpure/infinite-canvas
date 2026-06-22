@@ -97,7 +97,7 @@ export type CanvasAssistantImage = {
 export type CanvasAssistantMessage = {
     id: string;
     role: "user" | "assistant";
-    mode: "ask" | "image";
+    mode: "ask" | "image" | "agent";
     text: string;
     isLoading?: boolean;
     references?: CanvasAssistantReference[];

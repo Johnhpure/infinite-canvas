@@ -2,7 +2,7 @@
 
 import type { CSSProperties } from "react";
 import { useState } from "react";
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Edit3, Eye, Image as ImageIcon, LoaderCircle, MessageSquare, Play } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Edit3, Eye, Image as ImageIcon, MessageSquare, Play, Square } from "lucide-react";
 import { App, Button, Empty, Input, Modal, Segmented } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
@@ -22,9 +22,10 @@ type CanvasConfigNodePanelProps = {
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeMetadata>) => void;
     onTextInputChange: (nodeId: string, content: string) => void;
     onGenerate: (nodeId: string) => void;
+    onStop: (nodeId: string) => void;
 };
 
-export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, onConfigChange, onTextInputChange, onGenerate }: CanvasConfigNodePanelProps) {
+export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, onConfigChange, onTextInputChange, onGenerate, onStop }: CanvasConfigNodePanelProps) {
     const { message } = App.useApp();
     const [previewOpen, setPreviewOpen] = useState(false);
     const [editingTextId, setEditingTextId] = useState<string | null>(null);
@@ -161,17 +162,18 @@ export function CanvasConfigNodePanel({ node, isRunning, inputSummary, inputs, o
             <Button
                 type="primary"
                 className="mt-auto !h-9 !w-full !cursor-pointer !rounded-lg"
-                disabled={isRunning || (!inputSummary.textCount && !inputSummary.imageCount)}
+                danger={isRunning}
+                disabled={!isRunning && !inputSummary.textCount && !inputSummary.imageCount}
                 onMouseDown={(event) => event.stopPropagation()}
-                onClick={() => onGenerate(node.id)}
+                onClick={() => (isRunning ? onStop(node.id) : onGenerate(node.id))}
             >
                 <span className="inline-flex items-center gap-1.5">
                     <span className="inline-flex items-center gap-1">
                         <CreditSymbol />
                         {credits.toLocaleString()}
                     </span>
-                    {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <Play className="size-4" />}
-                    <span>开始生成</span>
+                    {isRunning ? <Square className="size-4" /> : <Play className="size-4" />}
+                    <span>{isRunning ? "停止" : "开始生成"}</span>
                 </span>
             </Button>
             <Modal

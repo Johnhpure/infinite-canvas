@@ -1090,7 +1090,7 @@ export default function AdminSettingsPage() {
                             </Col>
                             <Col span={12}>
                                 <Form.Item name="protocol" label="协议">
-                                    <Select options={[{ label: "OpenAI", value: "openai" }]} />
+                                    <Select options={[{ label: "OpenAI", value: "openai" }, { label: "Gemini", value: "gemini" }]} />
                                 </Form.Item>
                             </Col>
                             <Col span={12}>
@@ -1432,7 +1432,7 @@ function normalizeStorageProvider(item: Partial<AdminStorageProvider> = {}): Adm
 function normalizeChannel(item: Partial<AdminModelChannel> = {}): AdminModelChannel {
     return {
         id: item.id || "",
-        protocol: "openai",
+        protocol: item.protocol === "gemini" ? "gemini" : "openai",
         name: item.name || "",
         baseUrl: item.baseUrl || "",
         apiKey: item.apiKey || "",

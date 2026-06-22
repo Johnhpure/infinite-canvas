@@ -12,7 +12,7 @@ import { CreditSymbol, requestCreditCost } from "@/constant/credits";
 import { canvasThemes } from "@/lib/canvas-theme";
 import { nanoid } from "nanoid";
 import { cn } from "@/lib/utils";
-import { requestEdit, requestGeneration, requestImageQuestion, type ChatCompletionMessage } from "@/services/api/image";
+import { requestEdit, requestGeneration, requestImageQuestion, requestToolResponse, type ChatCompletionMessage, type ResponseFunctionTool, type ResponseInputMessage, type ResponseToolCall } from "@/services/api/image";
 import { imageToDataUrl, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -20,28 +20,47 @@ import type { ReferenceImage } from "@/types/image";
 import { DiaTextReveal } from "@/components/ui/dia-text-reveal";
 import { AssetPickerModal, type InsertAssetPayload } from "./asset-picker-modal";
 import { CanvasImageSettingsPopover } from "./canvas-image-settings-popover";
+import { CanvasLocalAgentPanel } from "./canvas-local-agent-panel";
 import { CanvasPromptLibrary } from "./canvas-prompt-library";
+import type { CanvasAgentOp, CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
 import { CanvasNodeType, type CanvasAssistantImage, type CanvasAssistantMessage, type CanvasAssistantReference, type CanvasAssistantSession, type CanvasNodeData } from "../types";
 
-type AssistantMode = "ask" | "image";
+type AssistantMode = "ask" | "image" | "agent";
 const PANEL_MOTION_MS = 500;
 const PANEL_MOTION_SECONDS = PANEL_MOTION_MS / 1000;
+const AGENT_SYSTEM_PROMPT =
+    "你是 Infinite Canvas 网页内置画布 Agent。只能使用提供的工具读取或修改当前画布。当前项目是纯生图平台，不支持视频或音频。需要改动画布时优先调用工具；工具参数中的节点 id 必须来自当前画布状态，不要编造。";
+
+const CANVAS_AGENT_TOOLS: ResponseFunctionTool[] = [
+    toolDefinition("canvas_get_state", "读取当前画布节点、选区和可操作能力。", {}),
+    toolDefinition("canvas_get_selection", "读取当前选中的画布节点。", {}),
+    toolDefinition("canvas_create_text_node", "在画布中央创建一个文本节点。", { text: { type: "string" } }, ["text"]),
+    toolDefinition("canvas_create_image_prompt_flow", "创建提示词文本节点和生图配置节点，可选择立即触发生图。", { prompt: { type: "string" }, autoRun: { type: "boolean" } }, ["prompt"]),
+    toolDefinition("canvas_select_nodes", "设置当前选中的节点。", { ids: { type: "array", items: { type: "string" } } }, ["ids"]),
+    toolDefinition("canvas_run_generation", "触发指定节点生成，只支持 text 或 image 模式。", { nodeId: { type: "string" }, mode: { type: "string", enum: ["text", "image"] }, prompt: { type: "string" } }, ["nodeId"]),
+];
 
 type CanvasAssistantPanelProps = {
     nodes: CanvasNodeData[];
     selectedNodeIds: Set<string>;
     sessions: CanvasAssistantSession[];
     activeSessionId: string | null;
+    snapshot: CanvasAgentSnapshot;
+    canUndoOps: boolean;
     onSelectNodeIds: (ids: Set<string>) => void;
     onSessionsChange: (sessions: CanvasAssistantSession[], activeSessionId: string | null) => void;
     onInsertImage: (image: CanvasAssistantImage) => void;
     onInsertText: (text: string) => void;
+    onCreateImagePromptFlow: (prompt: string, autoRun?: boolean) => void;
+    onRunGeneration: (nodeId: string, mode: "text" | "image", prompt?: string) => void;
+    onApplyOps: (ops: CanvasAgentOp[]) => unknown;
+    onUndoOps: () => CanvasAgentSnapshot | null;
     onPasteImage: (file: File) => void;
     onCollapseStart: () => void;
     onCollapse: () => void;
 };
 
-export function CanvasAssistantPanel({ nodes, selectedNodeIds, sessions, activeSessionId, onSelectNodeIds, onSessionsChange, onInsertImage, onInsertText, onPasteImage, onCollapseStart, onCollapse }: CanvasAssistantPanelProps) {
+export function CanvasAssistantPanel({ nodes, selectedNodeIds, sessions, activeSessionId, snapshot, canUndoOps, onSelectNodeIds, onSessionsChange, onInsertImage, onInsertText, onCreateImagePromptFlow, onRunGeneration, onApplyOps, onUndoOps, onPasteImage, onCollapseStart, onCollapse }: CanvasAssistantPanelProps) {
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const effectiveConfig = useEffectiveConfig();
     const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
@@ -167,6 +186,36 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, sessions, activeS
         setIsRunning(true);
 
         try {
+            if (nextMode === "agent") {
+                const messages: ResponseInputMessage[] = [
+                    { role: "system", content: AGENT_SYSTEM_PROMPT },
+                    { role: "user", content: `当前画布状态：\n${JSON.stringify(buildAgentSnapshot(nodes, selectedNodeIds), null, 2)}\n\n用户请求：${text}` },
+                ];
+                let streamed = "";
+                const result = await requestToolResponse({ ...requestConfig, systemPrompt: "" }, messages, CANVAS_AGENT_TOOLS, "auto", (value) => {
+                    streamed = value;
+                    updateMessage(session.id, assistantId, { text: value || "Agent 正在处理", isLoading: false });
+                });
+                if (!result.toolCalls.length) {
+                    updateMessage(session.id, assistantId, { text: result.content || streamed || "没有返回内容", isLoading: false });
+                    return;
+                }
+                updateMessage(session.id, assistantId, { text: summarizeToolCalls(result.toolCalls), isLoading: false });
+                const toolResults = result.toolCalls.map((call) => executeAgentTool(call, nodes, selectedNodeIds, onSelectNodeIds, onInsertText, onCreateImagePromptFlow, onRunGeneration));
+                const nextMessages: ResponseInputMessage[] = [
+                    ...messages,
+                    ...result.toolCalls.map(toolCallToResponseInput),
+                    ...toolResults.map((item) => ({ role: "tool" as const, tool_call_id: item.toolCallId, content: JSON.stringify(item.result) })),
+                ];
+                let nextStreamed = "";
+                const next = await requestToolResponse({ ...requestConfig, systemPrompt: "" }, nextMessages, CANVAS_AGENT_TOOLS, "auto", (value) => {
+                    nextStreamed = value;
+                    updateMessage(session.id, assistantId, { text: value || "工具已执行", isLoading: false });
+                });
+                updateMessage(session.id, assistantId, { text: next.content || nextStreamed || toolResults.map((item) => toolResultText(item.result)).join("\n") || "工具已执行", isLoading: false });
+                return;
+            }
+
             if (nextMode === "image") {
                 const referenceImages: ReferenceImage[] = await Promise.all(
                     refs.filter((item) => item.dataUrl).map(async (item) => ({ id: item.id, name: `${item.title}.png`, type: "image/png", dataUrl: await imageToDataUrl(item), storageKey: item.storageKey })),
@@ -327,6 +376,10 @@ export function CanvasAssistantPanel({ nodes, selectedNodeIds, sessions, activeS
                             }}
                             onDelete={(id) => setDeleteChatIds([id])}
                         />
+                    ) : mode === "agent" && !messages.length ? (
+                        <div className="flex min-h-[520px] flex-col overflow-hidden rounded-2xl border" style={{ borderColor: theme.node.stroke, background: theme.node.panel }}>
+                            <CanvasLocalAgentPanel snapshot={snapshot} canUndoOps={canUndoOps} embedded onApplyOps={onApplyOps} onUndoOps={onUndoOps} />
+                        </div>
                     ) : messages.length ? (
                         <AssistantMessages messages={messages} onRetry={retryMessage} onInsertImage={onInsertImage} onInsertText={onInsertText} />
                     ) : (
@@ -453,7 +506,7 @@ function AssistantComposer({
                     }}
                     className="thin-scrollbar h-20 w-full resize-none border-0 bg-transparent px-1 py-1 text-sm leading-5 outline-none placeholder:text-stone-400"
                     style={{ color: theme.node.text }}
-                    placeholder={mode === "image" ? "描述你想生成或修改的图片" : "输入你想问的问题"}
+                    placeholder={mode === "image" ? "描述你想生成或修改的图片" : mode === "agent" ? "让 Agent 读取或整理当前画布" : "输入你想问的问题"}
                 />
                 <div className="mt-2 flex items-center justify-between gap-2">
                     <div className="canvas-composer-tools flex min-w-0 flex-1 items-center gap-1">
@@ -500,6 +553,7 @@ function AssistantModeSwitch({ mode, theme, onChange }: { mode: AssistantMode; t
             {[
                 { value: "ask" as const, title: "对话", icon: <MessageSquare className="size-4" /> },
                 { value: "image" as const, title: "生图", icon: <ImageIcon className="size-4" /> },
+                { value: "agent" as const, title: "Agent", icon: <Sparkles className="size-4" /> },
             ].map((item) => (
                 <Tooltip key={item.value} title={item.title}>
                     <button
@@ -673,6 +727,124 @@ function buildAssistantReferences(nodes: CanvasNodeData[], selectedNodeIds: Set<
         .filter((node): node is CanvasNodeData => Boolean(node))
         .map(nodeToReference)
         .filter((item): item is CanvasAssistantReference => Boolean(item));
+}
+
+function toolDefinition(name: string, description: string, properties: Record<string, unknown>, required: string[] = []): ResponseFunctionTool {
+    return {
+        type: "function",
+        function: {
+            name,
+            description,
+            parameters: {
+                type: "object",
+                properties,
+                required,
+                additionalProperties: false,
+            },
+        },
+    };
+}
+
+function buildAgentSnapshot(nodes: CanvasNodeData[], selectedNodeIds: Set<string>) {
+    return {
+        selectedNodeIds: Array.from(selectedNodeIds),
+        nodes: nodes.map((node) => ({
+            id: node.id,
+            type: node.type,
+            title: node.title,
+            position: node.position,
+            width: node.width,
+            height: node.height,
+            metadata: {
+                prompt: node.metadata?.prompt,
+                content: node.type === CanvasNodeType.Text ? node.metadata?.content : node.metadata?.content ? "[image]" : "",
+                status: node.metadata?.status,
+                generationMode: node.metadata?.generationMode,
+            },
+        })),
+        capabilities: ["canvas_get_state", "canvas_get_selection", "canvas_create_text_node", "canvas_create_image_prompt_flow", "canvas_select_nodes", "canvas_run_generation"],
+    };
+}
+
+function executeAgentTool(
+    call: ResponseToolCall,
+    nodes: CanvasNodeData[],
+    selectedNodeIds: Set<string>,
+    onSelectNodeIds: (ids: Set<string>) => void,
+    onInsertText: (text: string) => void,
+    onCreateImagePromptFlow: (prompt: string, autoRun?: boolean) => void,
+    onRunGeneration: (nodeId: string, mode: "text" | "image", prompt?: string) => void,
+) {
+    const args = parseToolArguments(call.function.arguments);
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    try {
+        if (call.function.name === "canvas_get_state") return { toolCallId: call.id, result: { ok: true, snapshot: buildAgentSnapshot(nodes, selectedNodeIds) } };
+        if (call.function.name === "canvas_get_selection") return { toolCallId: call.id, result: { ok: true, selectedNodeIds: Array.from(selectedNodeIds), nodes: nodes.filter((node) => selectedNodeIds.has(node.id)).map((node) => ({ id: node.id, type: node.type, title: node.title })) } };
+        if (call.function.name === "canvas_create_text_node") {
+            const text = stringArg(args.text);
+            if (!text) throw new Error("text 不能为空");
+            onInsertText(text);
+            return { toolCallId: call.id, result: { ok: true, message: "已创建文本节点" } };
+        }
+        if (call.function.name === "canvas_create_image_prompt_flow") {
+            const prompt = stringArg(args.prompt);
+            if (!prompt) throw new Error("prompt 不能为空");
+            onCreateImagePromptFlow(prompt, Boolean(args.autoRun));
+            return { toolCallId: call.id, result: { ok: true, message: "已创建生图流程" } };
+        }
+        if (call.function.name === "canvas_select_nodes") {
+            const ids = Array.isArray(args.ids) ? args.ids.map(stringArg).filter((id) => nodeIds.has(id)) : [];
+            onSelectNodeIds(new Set(ids));
+            return { toolCallId: call.id, result: { ok: true, selectedNodeIds: ids } };
+        }
+        if (call.function.name === "canvas_run_generation") {
+            const nodeId = stringArg(args.nodeId);
+            if (!nodeIds.has(nodeId)) throw new Error("节点不存在");
+            const mode = args.mode === "text" ? "text" : "image";
+            onRunGeneration(nodeId, mode, stringArg(args.prompt));
+            return { toolCallId: call.id, result: { ok: true, message: "已触发生成" } };
+        }
+        return { toolCallId: call.id, result: { ok: false, message: `未知工具：${call.function.name}` } };
+    } catch (error) {
+        return { toolCallId: call.id, result: { ok: false, message: error instanceof Error ? error.message : "工具执行失败" } };
+    }
+}
+
+function parseToolArguments(value: string) {
+    try {
+        const parsed = JSON.parse(value || "{}") as unknown;
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+    } catch {
+        return {};
+    }
+}
+
+function stringArg(value: unknown) {
+    return typeof value === "string" ? value.trim() : "";
+}
+
+function toolCallToResponseInput(call: ResponseToolCall): ResponseInputMessage {
+    return { type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments, thoughtSignature: call.thoughtSignature };
+}
+
+function summarizeToolCalls(calls: ResponseToolCall[]) {
+    const labels = calls.map((call) => {
+        if (call.function.name === "canvas_get_state") return "读取画布";
+        if (call.function.name === "canvas_get_selection") return "读取选区";
+        if (call.function.name === "canvas_create_text_node") return "创建文本节点";
+        if (call.function.name === "canvas_create_image_prompt_flow") return "创建生图流程";
+        if (call.function.name === "canvas_select_nodes") return "选择节点";
+        if (call.function.name === "canvas_run_generation") return "触发生成";
+        return call.function.name;
+    });
+    return `Agent 调用工具：${labels.join("，")}`;
+}
+
+function toolResultText(result: unknown) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return "工具已执行";
+    const record = result as Record<string, unknown>;
+    if (typeof record.message === "string") return record.message;
+    return record.ok === false ? "工具执行失败" : "工具已执行";
 }
 
 async function buildChatMessages(messages: CanvasAssistantMessage[]): Promise<ChatCompletionMessage[]> {

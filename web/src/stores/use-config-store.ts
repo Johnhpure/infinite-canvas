@@ -9,6 +9,7 @@ import type { AdminPublicSettings } from "@/services/api/admin";
 
 export type LocalModelChannel = {
     id: string;
+    protocol: "openai" | "gemini";
     name: string;
     baseUrl: string;
     apiKey: string;
@@ -55,10 +56,12 @@ export type AiConfig = {
 };
 
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
+export const OPENAI_BASE_URL = "https://api.openai.com";
+export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 
 export const defaultConfig: AiConfig = {
     channelMode: "local",
-    baseUrl: "https://api.openai.com",
+    baseUrl: OPENAI_BASE_URL,
     apiKey: "",
     localChannels: [],
     imageChannelId: "",
@@ -136,13 +139,14 @@ export function normalizeLocalChannels(config: Partial<AiConfig>) {
     const channels = Array.isArray(config.localChannels) ? config.localChannels : [];
     const normalized = channels.map((channel, index) => ({
         id: channel.id || `local-${index + 1}`,
+        protocol: channel.protocol === "gemini" ? "gemini" as const : "openai" as const,
         name: typeof channel.name === "string" ? channel.name : `本地渠道 ${index + 1}`,
-        baseUrl: channel.baseUrl || "",
+        baseUrl: channel.baseUrl || (channel.protocol === "gemini" ? GEMINI_BASE_URL : ""),
         apiKey: channel.apiKey || "",
         models: Array.isArray(channel.models) ? channel.models.filter(Boolean) : [],
     }));
     if (!normalized.length) {
-        normalized.push({ id: "local-default", name: "本地直连", baseUrl: config.baseUrl || defaultConfig.baseUrl, apiKey: config.apiKey || "", models: Array.isArray(config.models) ? config.models.filter(Boolean) : [] });
+        normalized.push({ id: "local-default", protocol: "openai", name: "本地直连", baseUrl: config.baseUrl || defaultConfig.baseUrl, apiKey: config.apiKey || "", models: Array.isArray(config.models) ? config.models.filter(Boolean) : [] });
     }
     return normalized;
 }
@@ -252,6 +256,10 @@ export function buildApiUrl(baseUrl: string, path: string) {
     const hasApiVersion = lowerBaseUrl.endsWith("/v1") || lowerBaseUrl.endsWith("/api/v3") || lowerBaseUrl.endsWith("/api/plan/v3");
     const apiBaseUrl = hasApiVersion ? normalizedBaseUrl : `${normalizedBaseUrl}/v1`;
     return `${apiBaseUrl}${path}`;
+}
+
+export function defaultBaseUrlForProtocol(protocol: "openai" | "gemini") {
+    return protocol === "gemini" ? GEMINI_BASE_URL : OPENAI_BASE_URL;
 }
 
 function normalizeArkPlanBaseUrl(baseUrl: string) {

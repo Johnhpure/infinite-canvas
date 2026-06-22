@@ -107,9 +107,9 @@ description: settings 表中 public 和 private 配置结构说明
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `protocol` | string | 协议，当前为 `openai` |
+| `protocol` | string | 协议，可选 `openai` 或 `gemini` |
 | `name` | string | 渠道名称 |
-| `baseUrl` | string | OpenAI 兼容接口地址 |
+| `baseUrl` | string | OpenAI 兼容接口地址或 Gemini API 地址 |
 | `apiKey` | string | 渠道密钥 |
 | `models` | string[] | 该渠道可用模型 |
 | `weight` | number | 渠道权重；同一模型有多个可用渠道时按权重随机 |

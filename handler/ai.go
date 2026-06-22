@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,21 +60,7 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "AI 接口请求失败")
 		return
 	}
-	request, err := http.NewRequest(http.MethodPost, service.BuildModelChannelURL(channel, path), bytes.NewReader(body))
-	if err != nil {
-		log.Printf("AI proxy build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, path), err)
-		Fail(w, "AI 接口请求失败")
-		return
-	}
-	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
-	if contentType != "" {
-		request.Header.Set("Content-Type", contentType)
-	}
-	if err := service.ConsumeUserCredits(user.ID, modelName, credits, path, channel); err != nil {
-		FailError(w, err)
-		return
-	}
-	copyAIResponse(w, request, channel, aiLogContext{
+	logContext := aiLogContext{
 		StartedAt:       startedAt,
 		Endpoint:        path,
 		Method:          http.MethodPost,
@@ -85,11 +72,32 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		UnitCredits:     unitCredits,
 		ExpectImage:     isImageAIRequest(path, body),
 		RequestBody:     summarizeAIRequest(body, contentType),
-	}, func() {
+	}
+	refund := func() {
 		if err := service.RefundUserCredits(user.ID, modelName, credits, path, channel); err != nil {
 			log.Printf("AI proxy refund credits failed: user=%s model=%s credits=%d err=%v", user.ID, modelName, credits, err)
 		}
-	})
+	}
+	if err := service.ConsumeUserCredits(user.ID, modelName, credits, path, channel); err != nil {
+		FailError(w, err)
+		return
+	}
+	if service.IsGeminiChannel(channel) {
+		proxyGeminiAIRequest(w, r, path, body, contentType, channel, logContext, refund)
+		return
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, service.BuildModelChannelURL(channel, path), bytes.NewReader(body))
+	if err != nil {
+		log.Printf("AI proxy build request failed: url=%s err=%v", service.BuildModelChannelURL(channel, path), err)
+		refund()
+		Fail(w, "AI 接口请求失败")
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	copyAIResponse(w, request, channel, logContext, refund)
 }
 
 type aiLogContext struct {
@@ -173,6 +181,474 @@ func copyAIResponse(w http.ResponseWriter, request *http.Request, channel model.
 		}
 	}
 	saveAIProxyLog(logContext, status, result.Body, errorMessage, chargedCredits)
+}
+
+func proxyGeminiAIRequest(w http.ResponseWriter, r *http.Request, path string, body []byte, contentType string, channel model.ModelChannel, logContext aiLogContext, onFailure func()) {
+	responseBody, responseContentType, imageCount, err := callGeminiProxy(r, path, body, contentType, channel, logContext.Model)
+	if err != nil {
+		if onFailure != nil {
+			onFailure()
+		}
+		saveAIProxyLog(logContext, http.StatusBadGateway, "", err.Error(), 0)
+		FailWithStatus(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if responseContentType == "" {
+		responseContentType = "application/json; charset=utf-8"
+	}
+	if logContext.ExpectImage && imageCount <= 0 {
+		if onFailure != nil {
+			onFailure()
+		}
+		saveAIProxyLog(logContext, http.StatusBadGateway, string(responseBody), "Gemini 接口未返回有效图片", 0)
+		FailWithStatus(w, http.StatusBadGateway, "Gemini 接口未返回有效图片")
+		return
+	}
+	w.Header().Set("Content-Type", responseContentType)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(responseBody)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	chargedCredits := logContext.Credits
+	errorMessage := ""
+	status := http.StatusOK
+	if logContext.ExpectImage {
+		if logContext.UnitCredits > 0 && imageCount*logContext.UnitCredits < chargedCredits {
+			refundCredits := chargedCredits - imageCount*logContext.UnitCredits
+			chargedCredits -= refundCredits
+			_ = service.RefundUserCredits(logContext.UserID, logContext.Model, refundCredits, logContext.Endpoint, logContext.Channel)
+		}
+	}
+	saveAIProxyLog(logContext, status, string(responseBody), errorMessage, chargedCredits)
+}
+
+func callGeminiProxy(r *http.Request, path string, body []byte, contentType string, channel model.ModelChannel, modelName string) ([]byte, string, int, error) {
+	switch path {
+	case "/images/generations":
+		return callGeminiImageGeneration(r, body, channel, modelName)
+	case "/images/edits":
+		return callGeminiImageEdit(r, body, contentType, channel, modelName)
+	case "/chat/completions":
+		return callGeminiChatCompletions(r, body, channel, modelName)
+	case "/responses":
+		return callGeminiResponses(r, body, channel, modelName)
+	default:
+		return nil, "", 0, fmt.Errorf("Gemini 暂不支持该接口：%s", path)
+	}
+}
+
+func callGeminiImageGeneration(r *http.Request, body []byte, channel model.ModelChannel, modelName string) ([]byte, string, int, error) {
+	var payload struct {
+		Prompt string `json:"prompt"`
+		N      int    `json:"n"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	count := payload.N
+	if count <= 0 {
+		count = 1
+	}
+	items := []map[string]string{}
+	for i := 0; i < count; i++ {
+		images, err := requestGeminiImages(r, channel, modelName, []map[string]any{{"text": payload.Prompt}})
+		if err != nil {
+			return nil, "", 0, err
+		}
+		items = append(items, images...)
+	}
+	encoded, _ := json.Marshal(map[string]any{"data": items})
+	return encoded, "application/json; charset=utf-8", len(items), nil
+}
+
+func callGeminiImageEdit(r *http.Request, body []byte, contentType string, channel model.ModelChannel, modelName string) ([]byte, string, int, error) {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	form, err := multipart.NewReader(bytes.NewReader(body), params["boundary"]).ReadForm(64 << 20)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	defer form.RemoveAll()
+	if len(form.File["mask"]) > 0 {
+		return nil, "", 0, fmt.Errorf("Gemini 调用格式暂不支持蒙版编辑")
+	}
+	prompt := firstFormValue(form.Value, "prompt")
+	count := intFromString(firstFormValue(form.Value, "n"), 1)
+	parts := []map[string]any{{"text": prompt}}
+	for _, header := range form.File["image"] {
+		file, err := header.Open()
+		if err != nil {
+			return nil, "", 0, err
+		}
+		fileBody, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			return nil, "", 0, readErr
+		}
+		mimeType := header.Header.Get("Content-Type")
+		if mimeType == "" {
+			mimeType = "image/png"
+		}
+		parts = append(parts, map[string]any{"inlineData": map[string]any{"mimeType": mimeType, "data": base64.StdEncoding.EncodeToString(fileBody)}})
+	}
+	items := []map[string]string{}
+	for i := 0; i < count; i++ {
+		images, err := requestGeminiImages(r, channel, modelName, parts)
+		if err != nil {
+			return nil, "", 0, err
+		}
+		items = append(items, images...)
+	}
+	encoded, _ := json.Marshal(map[string]any{"data": items})
+	return encoded, "application/json; charset=utf-8", len(items), nil
+}
+
+func callGeminiChatCompletions(r *http.Request, body []byte, channel model.ModelChannel, modelName string) ([]byte, string, int, error) {
+	geminiBody := geminiBodyFromOpenAIChat(body, nil)
+	payload, err := requestGeminiJSON(r, channel, modelName, geminiBody, false)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	text := geminiText(payload)
+	chunk, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": map[string]string{"content": text}}}})
+	return []byte("data: " + string(chunk) + "\n\ndata: [DONE]\n\n"), "text/event-stream; charset=utf-8", 0, nil
+}
+
+func callGeminiResponses(r *http.Request, body []byte, channel model.ModelChannel, modelName string) ([]byte, string, int, error) {
+	var payload map[string]any
+	_ = json.Unmarshal(body, &payload)
+	if strings.Contains(string(body), "image_generation") {
+		parts := geminiPartsFromResponsesInput(payload["input"])
+		if len(parts) == 0 {
+			parts = []map[string]any{{"text": ""}}
+		}
+		images, err := requestGeminiImages(r, channel, modelName, parts)
+		if err != nil {
+			return nil, "", 0, err
+		}
+		output := []map[string]any{}
+		for _, image := range images {
+			output = append(output, map[string]any{"type": "image_generation_call", "result": image["b64_json"], "url": image["url"]})
+		}
+		encoded, _ := json.Marshal(map[string]any{"output": output})
+		return encoded, "application/json; charset=utf-8", len(images), nil
+	}
+	geminiBody := geminiBodyFromResponses(payload)
+	result, err := requestGeminiJSON(r, channel, modelName, geminiBody, false)
+	if err != nil {
+		return nil, "", 0, err
+	}
+	encoded, _ := json.Marshal(openAIResponsesFromGemini(result))
+	return encoded, "application/json; charset=utf-8", 0, nil
+}
+
+func requestGeminiImages(r *http.Request, channel model.ModelChannel, modelName string, parts []map[string]any) ([]map[string]string, error) {
+	payload, err := requestGeminiJSON(r, channel, modelName, map[string]any{
+		"contents": []map[string]any{{"role": "user", "parts": parts}},
+		"generationConfig": map[string]any{
+			"responseModalities": []string{"TEXT", "IMAGE"},
+		},
+	}, false)
+	if err != nil {
+		return nil, err
+	}
+	return geminiImages(payload), nil
+}
+
+func requestGeminiJSON(r *http.Request, channel model.ModelChannel, modelName string, body map[string]any, stream bool) (map[string]any, error) {
+	encoded, _ := json.Marshal(body)
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodPost, service.BuildGeminiGenerateURL(channel, modelName, stream), bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("x-goog-api-key", channel.APIKey)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := service.HTTPClientForChannel(channel).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	responseBody, _ := io.ReadAll(response.Body)
+	if response.StatusCode >= http.StatusBadRequest {
+		return nil, fmt.Errorf("%s", readUpstreamAIErrorMessage(responseBody, response.StatusCode))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return nil, err
+	}
+	if msg := geminiErrorMessage(payload); msg != "" {
+		return nil, fmt.Errorf("%s", msg)
+	}
+	return payload, nil
+}
+
+func geminiBodyFromOpenAIChat(body []byte, extra map[string]any) map[string]any {
+	var payload struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	_ = json.Unmarshal(body, &payload)
+	contents := []map[string]any{}
+	systemParts := []map[string]string{}
+	for _, message := range payload.Messages {
+		role := fmt.Sprint(message["role"])
+		text := chatContentText(message["content"])
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if role == "system" {
+			systemParts = append(systemParts, map[string]string{"text": text})
+			continue
+		}
+		geminiRole := "user"
+		if role == "assistant" {
+			geminiRole = "model"
+		}
+		contents = append(contents, map[string]any{"role": geminiRole, "parts": []map[string]string{{"text": text}}})
+	}
+	result := map[string]any{"contents": contents}
+	if len(systemParts) > 0 {
+		result["systemInstruction"] = map[string]any{"parts": systemParts}
+	}
+	for key, value := range extra {
+		result[key] = value
+	}
+	return result
+}
+
+func geminiBodyFromResponses(payload map[string]any) map[string]any {
+	body := map[string]any{"contents": []map[string]any{{"role": "user", "parts": geminiPartsFromResponsesInput(payload["input"])}}}
+	if tools, ok := geminiToolsFromResponses(payload["tools"]); ok {
+		body["tools"] = tools
+	}
+	return body
+}
+
+func geminiToolsFromResponses(value any) ([]map[string]any, bool) {
+	items, ok := value.([]any)
+	if !ok || len(items) == 0 {
+		return nil, false
+	}
+	declarations := []map[string]any{}
+	for _, item := range items {
+		record, ok := item.(map[string]any)
+		if !ok || fmt.Sprint(record["type"]) != "function" {
+			continue
+		}
+		declarations = append(declarations, map[string]any{
+			"name":        record["name"],
+			"description": record["description"],
+			"parameters":  record["parameters"],
+		})
+	}
+	if len(declarations) == 0 {
+		return nil, false
+	}
+	return []map[string]any{{"functionDeclarations": declarations}}, true
+}
+
+func geminiPartsFromResponsesInput(value any) []map[string]any {
+	switch typed := value.(type) {
+	case string:
+		return []map[string]any{{"text": typed}}
+	case []any:
+		parts := []map[string]any{}
+		for _, item := range typed {
+			record, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if content, ok := record["content"].([]any); ok {
+				for _, part := range content {
+					if converted := geminiPartFromResponseContent(part); converted != nil {
+						parts = append(parts, converted)
+					}
+				}
+			}
+		}
+		return parts
+	default:
+		return nil
+	}
+}
+
+func geminiPartFromResponseContent(value any) map[string]any {
+	record, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if text := strings.TrimSpace(fmt.Sprint(record["text"])); text != "" {
+		return map[string]any{"text": text}
+	}
+	imageURL := ""
+	if raw := record["image_url"]; raw != nil {
+		if image, ok := raw.(map[string]any); ok {
+			imageURL = fmt.Sprint(image["url"])
+		} else {
+			imageURL = fmt.Sprint(raw)
+		}
+	}
+	if imageURL == "" {
+		return nil
+	}
+	if mimeType, data, ok := splitDataURL(imageURL); ok {
+		return map[string]any{"inlineData": map[string]any{"mimeType": mimeType, "data": data}}
+	}
+	return map[string]any{"fileData": map[string]any{"fileUri": imageURL, "mimeType": "image/png"}}
+}
+
+func openAIResponsesFromGemini(payload map[string]any) map[string]any {
+	output := []map[string]any{}
+	text := geminiText(payload)
+	if strings.TrimSpace(text) != "" {
+		output = append(output, map[string]any{"type": "message", "content": []map[string]any{{"type": "output_text", "text": text}}})
+	}
+	for _, call := range geminiFunctionCalls(payload) {
+		output = append(output, map[string]any{"type": "function_call", "id": firstNonEmpty(call.ID, "call_"+time.Now().Format("150405000")), "call_id": firstNonEmpty(call.ID, "call_"+time.Now().Format("150405000")), "name": call.Name, "arguments": call.Arguments})
+	}
+	return map[string]any{"output": output, "output_text": text}
+}
+
+type geminiFunctionCall struct {
+	ID        string
+	Name      string
+	Arguments string
+}
+
+func geminiFunctionCalls(payload map[string]any) []geminiFunctionCall {
+	result := []geminiFunctionCall{}
+	for _, part := range geminiParts(payload) {
+		call, ok := part["functionCall"].(map[string]any)
+		if !ok {
+			call, ok = part["function_call"].(map[string]any)
+			if !ok {
+				continue
+			}
+		}
+		args, _ := json.Marshal(call["args"])
+		result = append(result, geminiFunctionCall{ID: fmt.Sprint(call["id"]), Name: fmt.Sprint(call["name"]), Arguments: string(args)})
+	}
+	return result
+}
+
+func geminiImages(payload map[string]any) []map[string]string {
+	result := []map[string]string{}
+	for _, part := range geminiParts(payload) {
+		if inline, ok := part["inlineData"].(map[string]any); ok {
+			if data := fmt.Sprint(inline["data"]); data != "" {
+				result = append(result, map[string]string{"b64_json": data})
+			}
+		}
+		if inline, ok := part["inline_data"].(map[string]any); ok {
+			if data := fmt.Sprint(inline["data"]); data != "" {
+				result = append(result, map[string]string{"b64_json": data})
+			}
+		}
+		if fileData, ok := part["fileData"].(map[string]any); ok {
+			if uri := fmt.Sprint(fileData["fileUri"]); uri != "" {
+				result = append(result, map[string]string{"url": uri})
+			}
+		}
+		if fileData, ok := part["file_data"].(map[string]any); ok {
+			uri := strings.TrimSpace(fmt.Sprint(fileData["fileUri"]))
+			if uri == "" || uri == "<nil>" {
+				uri = strings.TrimSpace(fmt.Sprint(fileData["file_uri"]))
+			}
+			if uri != "" && uri != "<nil>" {
+				result = append(result, map[string]string{"url": uri})
+			}
+		}
+	}
+	return result
+}
+
+func geminiText(payload map[string]any) string {
+	parts := []string{}
+	for _, part := range geminiParts(payload) {
+		if text := fmt.Sprint(part["text"]); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "")
+}
+
+func geminiParts(payload map[string]any) []map[string]any {
+	candidates, _ := payload["candidates"].([]any)
+	parts := []map[string]any{}
+	for _, candidate := range candidates {
+		candidateMap, _ := candidate.(map[string]any)
+		content, _ := candidateMap["content"].(map[string]any)
+		rawParts, _ := content["parts"].([]any)
+		for _, raw := range rawParts {
+			if part, ok := raw.(map[string]any); ok {
+				parts = append(parts, part)
+			}
+		}
+	}
+	return parts
+}
+
+func geminiErrorMessage(payload map[string]any) string {
+	if errorValue, ok := payload["error"].(map[string]any); ok {
+		return fmt.Sprint(errorValue["message"])
+	}
+	if feedback, ok := payload["promptFeedback"].(map[string]any); ok {
+		if reason := strings.TrimSpace(fmt.Sprint(feedback["blockReason"])); reason != "" {
+			return "Gemini 拒绝了本次请求：" + reason
+		}
+	}
+	return ""
+}
+
+func chatContentText(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []any:
+		parts := []string{}
+		for _, item := range typed {
+			record, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text := strings.TrimSpace(fmt.Sprint(record["text"])); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
+}
+
+func splitDataURL(value string) (string, string, bool) {
+	if !strings.HasPrefix(value, "data:") {
+		return "", "", false
+	}
+	header, data, ok := strings.Cut(value, ",")
+	if !ok {
+		return "", "", false
+	}
+	mimeType := strings.TrimPrefix(strings.Split(header, ";")[0], "data:")
+	if mimeType == "" {
+		mimeType = "image/png"
+	}
+	return mimeType, data, true
+}
+
+func firstFormValue(values map[string][]string, key string) string {
+	if list := values[key]; len(list) > 0 {
+		return list[0]
+	}
+	return ""
+}
+
+func intFromString(value string, fallback int) int {
+	var result int
+	if _, err := fmt.Sscanf(value, "%d", &result); err != nil || result <= 0 {
+		return fallback
+	}
+	return result
 }
 
 func startAIClientKeepalive(w http.ResponseWriter, enabled bool) *aiClientKeepalive {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUp, Library, LoaderCircle } from "lucide-react";
+import { ArrowUp, Library, Square } from "lucide-react";
 import { Button, Segmented, Tooltip } from "antd";
 
 import { ModelPicker } from "@/components/model-picker";
@@ -21,11 +21,12 @@ type CanvasNodePromptPanelProps = {
     onPromptChange: (nodeId: string, prompt: string) => void;
     onConfigChange: (nodeId: string, patch: Partial<CanvasNodeData["metadata"]>) => void;
     onGenerate: (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => void;
+    onStop: (nodeId: string) => void;
     onImageSettingsOpenChange?: (open: boolean) => void;
     onOpenAssetLibrary?: () => void;
 };
 
-export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onImageSettingsOpenChange, onOpenAssetLibrary }: CanvasNodePromptPanelProps) {
+export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfigChange, onGenerate, onStop, onImageSettingsOpenChange, onOpenAssetLibrary }: CanvasNodePromptPanelProps) {
     const globalConfig = useEffectiveConfig();
     const modelCosts = useConfigStore((state) => state.publicSettings?.modelChannel.modelCosts);
     const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
@@ -48,8 +49,12 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
     };
 
     const submit = () => {
+        if (isRunning) {
+            onStop(node.id);
+            return;
+        }
         const text = prompt.trim();
-        if (!text || isRunning) return;
+        if (!text) return;
         onGenerate(node.id, mode, text);
         setPrompt("");
     };
@@ -122,13 +127,13 @@ export function CanvasNodePromptPanel({ node, isRunning, onPromptChange, onConfi
                         <ModelPicker config={config} value={config.model} channelId={config.textChannelId} onChange={(model, channelId) => onConfigChange(node.id, { model, ...(channelId ? { textChannelId: channelId } : {}) })} onMissingConfig={() => openConfigDialog(true)} />
                     )}
                 </div>
-                <Button type="primary" className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3" disabled={isRunning || !prompt.trim()} onClick={submit} aria-label="生成">
+                <Button type="primary" danger={isRunning} className="!h-10 !min-w-16 shrink-0 !rounded-full !px-3" disabled={!isRunning && !prompt.trim()} onClick={submit} aria-label={isRunning ? "停止生成" : "生成"}>
                     <span className="flex items-center gap-1.5">
                         <span className="inline-flex items-center gap-1 text-xs font-medium tabular-nums">
                             <CreditSymbol />
                             {credits.toLocaleString()}
                         </span>
-                        {isRunning ? <LoaderCircle className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+                        {isRunning ? <Square className="size-4" /> : <ArrowUp className="size-4" />}
                     </span>
                 </Button>
             </div>

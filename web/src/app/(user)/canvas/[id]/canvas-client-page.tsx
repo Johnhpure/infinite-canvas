@@ -38,6 +38,7 @@ import { CanvasToolbar } from "../components/canvas-toolbar";
 import { AssetPickerModal, type AssetPickerTab, type InsertAssetPayload } from "../components/asset-picker-modal";
 import { CanvasZoomControls } from "../components/canvas-zoom-controls";
 import { useCanvasStore } from "../stores/use-canvas-store";
+import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "../utils/canvas-agent-ops";
 import {
     CanvasNodeType,
     type CanvasAssistantImage,
@@ -74,6 +75,12 @@ type CanvasHistoryEntry = Pick<CanvasClipboard, "nodes" | "connections"> & {
 const NODE_STATUS_LOADING = "loading" as const;
 const NODE_STATUS_SUCCESS = "success" as const;
 const NODE_STATUS_ERROR = "error" as const;
+const NODE_STATUS_IDLE = "idle" as const;
+
+type CanvasGenerationRequest = {
+    controller: AbortController;
+    targetNodeIds: string[];
+};
 
 function createCanvasNode(type: CanvasNodeType, position: Position, metadata?: CanvasNodeMetadata): CanvasNodeData {
     const spec = getNodeSpec(type);
@@ -296,6 +303,7 @@ function InfiniteCanvasPage() {
     const connectionTargetNodeIdRef = useRef(connectionTargetNodeId);
     const selectionBoxRef = useRef(selectionBox);
     const pendingConnectionCreateRef = useRef(pendingConnectionCreate);
+    const generationRequestsRef = useRef(new Map<string, CanvasGenerationRequest>());
 
     const createHistoryEntry = useCallback(
         (): CanvasHistoryEntry => ({
@@ -640,6 +648,17 @@ function InfiniteCanvasPage() {
     }, [collapsingBatchIds, nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+    const canvasAgentSnapshot = useMemo<CanvasAgentSnapshot>(
+        () => ({
+            projectId,
+            title: currentProject?.title || "未命名画布",
+            nodes,
+            connections,
+            selectedNodeIds: Array.from(selectedNodeIds),
+            viewport,
+        }),
+        [connections, currentProject?.title, nodes, projectId, selectedNodeIds, viewport],
+    );
     const toolbarNode = toolbarNodeId ? nodeById.get(toolbarNodeId) || null : null;
     const infoNode = infoNodeId ? nodeById.get(infoNodeId) || null : null;
     const cropNode = cropNodeId ? nodeById.get(cropNodeId) || null : null;
@@ -1822,6 +1841,47 @@ function InfiniteCanvasPage() {
         setContextMenu(null);
     }, []);
 
+    const startGenerationRequest = useCallback((runningId: string, targetNodeIds: string[] = [runningId]) => {
+        const existing = generationRequestsRef.current.get(runningId);
+        existing?.controller.abort();
+        const controller = new AbortController();
+        generationRequestsRef.current.set(runningId, { controller, targetNodeIds });
+        setRunningNodeId(runningId);
+        return controller;
+    }, []);
+
+    const updateGenerationRequestTargets = useCallback((runningId: string, targetNodeIds: string[]) => {
+        const request = generationRequestsRef.current.get(runningId);
+        if (request) generationRequestsRef.current.set(runningId, { ...request, targetNodeIds });
+    }, []);
+
+    const finishGenerationRequest = useCallback((runningId: string) => {
+        generationRequestsRef.current.delete(runningId);
+        setRunningNodeId((current) => (current === runningId ? null : current));
+    }, []);
+
+    const isGenerationCanceled = useCallback((error: unknown) => (error instanceof DOMException && error.name === "AbortError") || (error instanceof Error && (error.name === "AbortError" || error.message === "请求已取消")), []);
+
+    const stopGenerationByRunningId = useCallback(
+        (runningId: string) => {
+            const request = generationRequestsRef.current.get(runningId);
+            if (!request) return;
+            request.controller.abort();
+            generationRequestsRef.current.delete(runningId);
+            setRunningNodeId((current) => (current === runningId ? null : current));
+            const targetIds = new Set([runningId, ...request.targetNodeIds]);
+            setNodes((prev) =>
+                prev.map((node) =>
+                    targetIds.has(node.id) && node.metadata?.status === NODE_STATUS_LOADING
+                        ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, durationMs: node.metadata?.startedAt ? Date.now() - node.metadata.startedAt : node.metadata?.durationMs, errorDetails: undefined } }
+                        : node,
+                ),
+            );
+            message.info("已停止生成");
+        },
+        [message],
+    );
+
     const handleGenerateNode = useCallback(
         async (nodeId: string, mode: CanvasNodeGenerationMode, prompt: string) => {
             const sourceNode = nodesRef.current.find((node) => node.id === nodeId);
@@ -1831,7 +1891,7 @@ function InfiniteCanvasPage() {
                 return;
             }
 
-            setRunningNodeId(nodeId);
+            const controller = startGenerationRequest(nodeId, [nodeId]);
             const sourceTextContent = sourceNode?.type === CanvasNodeType.Text ? sourceNode.metadata?.content?.trim() || "" : "";
             const editingTextNode = mode === "text" && Boolean(sourceTextContent);
             const generationContext = await hydrateNodeGenerationContext(
@@ -1840,7 +1900,7 @@ function InfiniteCanvasPage() {
             const effectivePrompt = generationContext.prompt.trim();
             const markSourceStatus = sourceNode?.type !== CanvasNodeType.Image && !editingTextNode;
             if (!effectivePrompt && mode === "text") {
-                setRunningNodeId(null);
+                finishGenerationRequest(nodeId);
                 return;
             }
             let pendingChildIds: string[] = [];
@@ -1871,6 +1931,7 @@ function InfiniteCanvasPage() {
                     const childIds = count > 1 ? Array.from({ length: count }, () => nanoid()) : [];
                     const targetIds = count > 1 ? childIds : [rootId];
                     pendingChildIds = isEmptyImageNode ? childIds : [rootId, ...childIds];
+                    updateGenerationRequestTargets(nodeId, [nodeId, ...targetIds]);
                     const rootNode: CanvasNodeData = {
                         id: rootId,
                         type: CanvasNodeType.Image,
@@ -1953,8 +2014,8 @@ function InfiniteCanvasPage() {
                         targetIds.map(async (targetId, index) => {
                             try {
                                 const image = referenceImages.length
-                                    ? await requestEdit({ ...generationConfig, count: "1", seedIndex: index, seedCount: targetIds.length }, effectivePrompt, referenceImages, maskDataUrl ? { maskDataUrl } : {}).then((items) => items[0])
-                                    : await requestGeneration({ ...generationConfig, count: "1", seedIndex: index, seedCount: targetIds.length }, effectivePrompt).then((items) => items[0]);
+                                    ? await requestEdit({ ...generationConfig, count: "1", seedIndex: index, seedCount: targetIds.length }, effectivePrompt, referenceImages, { ...(maskDataUrl ? { maskDataUrl } : {}), signal: controller.signal }).then((items) => items[0])
+                                    : await requestGeneration({ ...generationConfig, count: "1", seedIndex: index, seedCount: targetIds.length }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
                                 
                                 // 1. 乐观渲染阶段
                                 const meta = await readImageMeta(image.dataUrl).catch(() => ({ width: 1024, height: 1024, mimeType: "image/png" }));
@@ -2047,6 +2108,7 @@ function InfiniteCanvasPage() {
                                     );
                                 return true;
                             } catch (error) {
+                                if (isGenerationCanceled(error)) throw error;
                                 const errorDetails = error instanceof Error ? error.message : "生成失败";
                                 hasFailure = true;
                                 setNodes((prev) =>
@@ -2056,6 +2118,7 @@ function InfiniteCanvasPage() {
                             }
                         }),
                     );
+                    if (controller.signal.aborted) return;
                     if (hasFailure) message.error(hasSuccess ? "部分图片生成失败" : "全部图片生成失败");
                     setNodes((prev) =>
                         prev.map((node) =>
@@ -2095,6 +2158,7 @@ function InfiniteCanvasPage() {
                 const parentPosition = sourceNode?.position || { x: 0, y: 0 };
                 const childIds = isConfigNode || editingTextNode ? Array.from({ length: textCount }, () => nanoid()) : [];
                 pendingChildIds = childIds;
+                updateGenerationRequestTargets(nodeId, [nodeId, ...(childIds.length ? childIds : [nodeId])]);
                 if (isConfigNode || editingTextNode) {
                     const childNodes: CanvasNodeData[] = childIds.map((id, index) => ({
                         id,
@@ -2120,7 +2184,7 @@ function InfiniteCanvasPage() {
                             streamed = text;
                             if (isConfigNode) return;
                             setNodes((prev) => prev.map((node) => (node.id === targetNodeId ? { ...node, type: CanvasNodeType.Text, metadata: { ...node.metadata, content: text, status: NODE_STATUS_LOADING } } : node)));
-                        }).then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }));
+                        }, { signal: controller.signal }).then((answer) => ({ nodeId: targetNodeId, content: answer || localStreamed }));
                     }),
                 );
                 const answerByNodeId = new Map(answers.map((item) => [item.nodeId, item.content]));
@@ -2136,16 +2200,17 @@ function InfiniteCanvasPage() {
                     ),
                 );
             } catch (error) {
+                if (isGenerationCanceled(error)) return;
                 const errorDetails = error instanceof Error ? error.message : "生成失败";
                 message.error(errorDetails);
                 setNodes((prev) =>
                     prev.map((node) => (node.id === nodeId || pendingChildIds.includes(node.id) ? (node.id === nodeId && !markSourceStatus ? node : { ...node, metadata: { ...node.metadata, status: NODE_STATUS_ERROR, durationMs: Date.now() - (node.metadata?.startedAt || generationStartedAt), errorDetails } }) : node)),
                 );
             } finally {
-                setRunningNodeId(null);
+                finishGenerationRequest(nodeId);
             }
         },
-        [effectiveConfig, openConfigDialog],
+        [effectiveConfig, finishGenerationRequest, isGenerationCanceled, openConfigDialog, startGenerationRequest, updateGenerationRequestTargets],
     );
 
     const handleRetryNode = useCallback(
@@ -2280,6 +2345,23 @@ function InfiniteCanvasPage() {
         [effectiveConfig, message, openConfigDialog],
     );
 
+    const applyAgentOps = useCallback(
+        (ops: CanvasAgentOp[]) => {
+            const next = applyCanvasAgentOps(canvasAgentSnapshot, ops);
+            setNodes(next.nodes);
+            setConnections(next.connections);
+            setSelectedNodeIds(new Set(next.selectedNodeIds));
+            setViewport(next.viewport);
+            return next;
+        },
+        [canvasAgentSnapshot],
+    );
+
+    const undoAgentOps = useCallback(() => {
+        undoCanvas();
+        return null;
+    }, [undoCanvas]);
+
     const generateImageFromTextNode = useCallback(
         (node: CanvasNodeData) => {
             const prompt = (node.metadata?.content || node.metadata?.prompt || "").trim();
@@ -2407,6 +2489,43 @@ function InfiniteCanvasPage() {
         [screenToCanvas, size.height, size.width],
     );
 
+    const createAssistantImagePromptFlow = useCallback(
+        (prompt: string, autoRun = false) => {
+            const center = screenToCanvas((containerRef.current?.getBoundingClientRect().left || 0) + size.width / 2, (containerRef.current?.getBoundingClientRect().top || 0) + size.height / 2);
+            const textSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Text];
+            const configSpec = NODE_DEFAULT_SIZE[CanvasNodeType.Config];
+            const textNode = createCanvasNode(CanvasNodeType.Text, { x: center.x - 120, y: center.y }, { content: prompt, prompt, status: NODE_STATUS_SUCCESS, fontSize: 14 });
+            textNode.title = prompt.slice(0, 32) || "Agent Prompt";
+            const configNode = createCanvasNode(CanvasNodeType.Config, { x: center.x + textSpec.width + 72, y: center.y }, {
+                prompt: `@[node:${textNode.id}]`,
+                status: NODE_STATUS_SUCCESS,
+                generationMode: "image",
+                model: effectiveConfig.imageModel || effectiveConfig.model,
+                imageChannelId: effectiveConfig.imageChannelId,
+                apiMode: effectiveConfig.apiMode,
+                size: effectiveConfig.size,
+                quality: effectiveConfig.quality,
+                outputFormat: effectiveConfig.outputFormat,
+                outputCompression: effectiveConfig.outputCompression,
+                moderation: effectiveConfig.moderation,
+                retryAttempts: effectiveConfig.retryAttempts,
+                count: 1,
+                inputOrder: [textNode.id],
+            });
+            textNode.width = textSpec.width;
+            textNode.height = textSpec.height;
+            configNode.width = configSpec.width;
+            configNode.height = configSpec.height;
+            setNodes((prev) => [...prev, textNode, configNode]);
+            setConnections((prev) => [...prev, { id: nanoid(), fromNodeId: textNode.id, toNodeId: configNode.id }]);
+            setSelectedNodeIds(new Set([configNode.id]));
+            setSelectedConnectionId(null);
+            setDialogNodeId(configNode.id);
+            if (autoRun) window.setTimeout(() => void handleGenerateNode(configNode.id, "image", configNode.metadata?.prompt || prompt), 0);
+        },
+        [effectiveConfig, handleGenerateNode, screenToCanvas, size.height, size.width],
+    );
+
     const handleAssetInsert = useCallback(
         (payload: InsertAssetPayload) => {
             if (payload.kind === "text") {
@@ -2518,6 +2637,7 @@ function InfiniteCanvasPage() {
                                     onPromptChange={handleNodePromptChange}
                                     onConfigChange={handleConfigNodeChange}
                                     onGenerate={handleGenerateNode}
+                                    onStop={stopGenerationByRunningId}
                                     onImageSettingsOpenChange={(open) => {
                                         setNodeImageSettingsOpen(open);
                                         if (open) setToolbarNodeId(null);
@@ -2540,6 +2660,7 @@ function InfiniteCanvasPage() {
                                         const target = nodesRef.current.find((item) => item.id === nodeId);
                                         void handleGenerateNode(nodeId, target?.metadata?.generationMode || "image", target?.metadata?.prompt || "");
                                     }}
+                                    onStop={stopGenerationByRunningId}
                                 />
                             )}
                             onMouseDown={handleNodeMouseDown}
@@ -2873,10 +2994,16 @@ function InfiniteCanvasPage() {
                     selectedNodeIds={selectedNodeIds}
                     sessions={chatSessions}
                     activeSessionId={activeChatId}
+                    snapshot={canvasAgentSnapshot}
+                    canUndoOps={historyState.canUndo}
                     onSelectNodeIds={setSelectedNodeIds}
                     onSessionsChange={handleAssistantSessionsChange}
                     onInsertImage={insertAssistantImage}
                     onInsertText={insertAssistantText}
+                    onCreateImagePromptFlow={createAssistantImagePromptFlow}
+                    onRunGeneration={(nodeId, mode, prompt) => void handleGenerateNode(nodeId, mode, prompt || nodesRef.current.find((node) => node.id === nodeId)?.metadata?.prompt || "")}
+                    onApplyOps={applyAgentOps}
+                    onUndoOps={undoAgentOps}
                     onPasteImage={pasteAssistantImage}
                     onCollapseStart={() => setAssistantCollapsed(true)}
                     onCollapse={() => setAssistantMounted(false)}

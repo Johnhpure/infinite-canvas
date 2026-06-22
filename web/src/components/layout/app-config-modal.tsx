@@ -8,7 +8,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { fetchChannelModels, type AdminModelChannel } from "@/services/api/admin";
 import { fetchUserConfig, measureUserStorageProvider, syncUserModelConfig, syncUserStorageProvider } from "@/services/api/user-config";
 import { defaultUserStorageProvider, saveUserStorageProvider, USER_STORAGE_PROVIDER_KEY, type UserStorageProvider, clearStorageConfigCache as clearImageStorageCache } from "@/services/image-storage";
-import { normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel } from "@/stores/use-config-store";
+import { defaultBaseUrlForProtocol, normalizeLocalChannels, useConfigStore, useEffectiveConfig, type AiConfig, type LocalModelChannel } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
 
 export function AppConfigModal() {
@@ -321,8 +321,15 @@ export function AppConfigModal() {
         updateLocalChannels(normalizeLocalChannels(config).map((channel) => (channel.id === id ? { ...channel, ...patch } : channel)));
     };
 
+    const patchLocalChannelProtocol = (channel: LocalModelChannel, protocol: LocalModelChannel["protocol"]) => {
+        patchLocalChannel(channel.id, {
+            protocol,
+            baseUrl: !channel.baseUrl.trim() || channel.baseUrl.trim() === defaultBaseUrlForProtocol(channel.protocol) ? defaultBaseUrlForProtocol(protocol) : channel.baseUrl,
+        });
+    };
+
     const addLocalChannel = () => {
-        updateLocalChannels([...normalizeLocalChannels(config), { id: `local-${Date.now()}`, name: "新渠道", baseUrl: "", apiKey: "", models: [] }]);
+        updateLocalChannels([...normalizeLocalChannels(config), { id: `local-${Date.now()}`, protocol: "openai", name: "新渠道", baseUrl: "", apiKey: "", models: [] }]);
     };
 
     const removeLocalChannel = (id: string) => {
@@ -484,7 +491,7 @@ export function AppConfigModal() {
                                 <div className="flex items-center justify-between gap-3">
                                     <div>
                                         <div className="text-sm font-medium">本地模型渠道</div>
-                                        <div className="mt-1 text-xs text-stone-500">可为生图、视频、文本分别选择不同渠道的模型。</div>
+                                        <div className="mt-1 text-xs text-stone-500">可为生图和文本分别选择不同渠道的模型。</div>
                                     </div>
                                     <Button size="small" onClick={addLocalChannel}>
                                         新增渠道
@@ -492,8 +499,9 @@ export function AppConfigModal() {
                                 </div>
                                 {normalizeLocalChannels(config).map((channel, index) => (
                                     <div key={channel.id} className="space-y-2 rounded-md bg-stone-50 p-2 dark:bg-stone-900">
-                                        <div className="grid gap-2 md:grid-cols-[160px_minmax(0,1fr)_minmax(0,1fr)_auto]">
+                                        <div className="grid gap-2 md:grid-cols-[120px_140px_minmax(0,1fr)_minmax(0,1fr)_auto]">
                                             <Input value={channel.name} placeholder="渠道名称" onChange={(event) => patchLocalChannel(channel.id, { name: event.target.value })} />
+                                            <Select value={channel.protocol || "openai"} options={[{ label: "OpenAI", value: "openai" }, { label: "Gemini", value: "gemini" }]} onChange={(value) => patchLocalChannelProtocol(channel, value)} />
                                             <Input value={channel.baseUrl} placeholder="Base URL" onChange={(event) => patchLocalChannel(channel.id, { baseUrl: event.target.value })} />
                                             <Input.Password value={channel.apiKey} placeholder="API Key" onChange={(event) => patchLocalChannel(channel.id, { apiKey: event.target.value })} />
                                             <div className="flex gap-2">
@@ -770,7 +778,7 @@ function formatStorageBytes(bytes: number) {
 function localChannelToAdminChannel(channel: LocalModelChannel): AdminModelChannel {
     return {
         id: channel.id,
-        protocol: "openai",
+        protocol: channel.protocol || "openai",
         name: channel.name,
         baseUrl: channel.baseUrl,
         apiKey: channel.apiKey,

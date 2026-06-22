@@ -174,9 +174,7 @@ func normalizePrivateSetting(setting model.PrivateSetting) model.PrivateSetting 
 	setting.AILog = normalizeAILogSetting(setting.AILog)
 	setting.Storage = normalizePrivateStorageSetting(setting.Storage)
 	for i := range setting.Channels {
-		if setting.Channels[i].Protocol == "" {
-			setting.Channels[i].Protocol = "openai"
-		}
+		setting.Channels[i].Protocol = normalizeChannelProtocol(setting.Channels[i].Protocol)
 		if setting.Channels[i].ID == "" {
 			setting.Channels[i].ID = stableModelChannelID(setting.Channels[i])
 		}
@@ -442,6 +440,30 @@ func BuildModelChannelURL(channel model.ModelChannel, path string) string {
 	return baseURL + "/v1" + path
 }
 
+func BuildGeminiModelListURL(channel model.ModelChannel) string {
+	return buildGeminiBaseURL(channel.BaseURL) + "/models"
+}
+
+func BuildGeminiGenerateURL(channel model.ModelChannel, modelName string, stream bool) string {
+	action := "generateContent"
+	if stream {
+		action = "streamGenerateContent?alt=sse"
+	}
+	return buildGeminiBaseURL(channel.BaseURL) + "/models/" + url.PathEscape(strings.TrimPrefix(strings.TrimSpace(modelName), "models/")) + ":" + action
+}
+
+func buildGeminiBaseURL(baseURL string) string {
+	value := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if value == "" {
+		value = "https://generativelanguage.googleapis.com"
+	}
+	lower := strings.ToLower(value)
+	if strings.HasSuffix(lower, "/v1") || strings.HasSuffix(lower, "/v1beta") {
+		return value
+	}
+	return value + "/v1beta"
+}
+
 func normalizeModelChannelPath(path string) string {
 	path = strings.TrimRight(path, "/")
 	lower := strings.ToLower(path)
@@ -455,9 +477,7 @@ func normalizeModelChannelPath(path string) string {
 }
 
 func normalizeModelChannel(channel model.ModelChannel) model.ModelChannel {
-	if channel.Protocol == "" {
-		channel.Protocol = "openai"
-	}
+	channel.Protocol = normalizeChannelProtocol(channel.Protocol)
 	if channel.ID == "" {
 		channel.ID = stableModelChannelID(channel)
 	}
@@ -471,6 +491,17 @@ func normalizeModelChannel(channel model.ModelChannel) model.ModelChannel {
 		channel.Timeout = 600
 	}
 	return channel
+}
+
+func normalizeChannelProtocol(protocol string) string {
+	if strings.EqualFold(strings.TrimSpace(protocol), "gemini") {
+		return "gemini"
+	}
+	return "openai"
+}
+
+func IsGeminiChannel(channel model.ModelChannel) bool {
+	return normalizeChannelProtocol(channel.Protocol) == "gemini"
 }
 
 func resolveAdminChannel(index *int, channel model.ModelChannel) (model.ModelChannel, error) {
@@ -508,6 +539,36 @@ func resolveAdminChannel(index *int, channel model.ModelChannel) (model.ModelCha
 }
 
 func fetchAdminChannelModels(channel model.ModelChannel) ([]string, error) {
+	if IsGeminiChannel(channel) {
+		request, err := http.NewRequest(http.MethodGet, BuildGeminiModelListURL(channel), nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("x-goog-api-key", channel.APIKey)
+		response, err := HTTPClientForChannel(channel).Do(request)
+		if err != nil {
+			return nil, err
+		}
+		defer response.Body.Close()
+		body, _ := io.ReadAll(response.Body)
+		if response.StatusCode >= http.StatusBadRequest {
+			return nil, readAdminChannelError(body, response.StatusCode, "读取模型失败")
+		}
+		var payload struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		result := make([]string, 0, len(payload.Models))
+		for _, item := range payload.Models {
+			if modelName := strings.TrimPrefix(strings.TrimSpace(item.Name), "models/"); modelName != "" {
+				result = append(result, modelName)
+			}
+		}
+		sort.Strings(result)
+		return result, nil
+	}
 	request, err := http.NewRequest(http.MethodGet, BuildModelChannelURL(channel, "/models"), nil)
 	if err != nil {
 		return nil, err
@@ -544,6 +605,32 @@ func fetchAdminChannelModels(channel model.ModelChannel) ([]string, error) {
 func testAdminChannelModel(channel model.ModelChannel, modelName string) (string, error) {
 	if strings.TrimSpace(modelName) == "" {
 		return "", errors.New("缺少模型名称")
+	}
+	if IsGeminiChannel(channel) {
+		body, _ := json.Marshal(map[string]any{
+			"contents": []map[string]any{{
+				"role": "user",
+				"parts": []map[string]any{{
+					"text": "hi",
+				}},
+			}},
+		})
+		request, err := http.NewRequest(http.MethodPost, BuildGeminiGenerateURL(channel, modelName, false), strings.NewReader(string(body)))
+		if err != nil {
+			return "", err
+		}
+		request.Header.Set("x-goog-api-key", channel.APIKey)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := HTTPClientForChannel(channel).Do(request)
+		if err != nil {
+			return "", err
+		}
+		defer response.Body.Close()
+		responseBody, _ := io.ReadAll(response.Body)
+		if response.StatusCode >= http.StatusBadRequest {
+			return "", readAdminChannelError(responseBody, response.StatusCode, "测试失败")
+		}
+		return "测试成功", nil
 	}
 	body, _ := json.Marshal(map[string]any{
 		"model": modelName,
@@ -648,14 +735,15 @@ func publicChannelInfos(channels []model.ModelChannel) []model.PublicModelChanne
 			continue
 		}
 		result = append(result, model.PublicModelChannelInfo{
-			ID:      channel.ID,
-			Name:    channel.Name,
-			BaseURL: channel.BaseURL,
-			Models:  append([]string{}, channel.Models...),
-			Weight:  channel.Weight,
-			Timeout: channel.Timeout,
-			Enabled: channel.Enabled,
-			Remark:  channel.Remark,
+			ID:       channel.ID,
+			Protocol: normalizeChannelProtocol(channel.Protocol),
+			Name:     channel.Name,
+			BaseURL:  channel.BaseURL,
+			Models:   append([]string{}, channel.Models...),
+			Weight:   channel.Weight,
+			Timeout:  channel.Timeout,
+			Enabled:  channel.Enabled,
+			Remark:   channel.Remark,
 		})
 	}
 	return result

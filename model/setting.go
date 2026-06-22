@@ -50,14 +50,15 @@ type SystemPromptSetting struct {
 }
 
 type PublicModelChannelInfo struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	BaseURL string   `json:"baseUrl"`
-	Models  []string `json:"models"`
-	Weight  int      `json:"weight"`
-	Timeout int      `json:"timeout"`
-	Enabled bool     `json:"enabled"`
-	Remark  string   `json:"remark"`
+	ID       string   `json:"id"`
+	Protocol string   `json:"protocol"`
+	Name     string   `json:"name"`
+	BaseURL  string   `json:"baseUrl"`
+	Models   []string `json:"models"`
+	Weight   int      `json:"weight"`
+	Timeout  int      `json:"timeout"`
+	Enabled  bool     `json:"enabled"`
+	Remark   string   `json:"remark"`
 }
 
 // PublicSetting 公开配置。
@@ -102,9 +103,9 @@ type PublicOIDCAuthSetting struct {
 
 // PublicMembershipSetting 会员功能公开配置。
 type PublicMembershipSetting struct {
-	Enabled         bool     `json:"enabled"`
-	PaymentMethods  []string `json:"paymentMethods"` // wechat / alipay
-	ServiceNotice   string   `json:"serviceNotice"`
+	Enabled        bool     `json:"enabled"`
+	PaymentMethods []string `json:"paymentMethods"` // wechat / alipay
+	ServiceNotice  string   `json:"serviceNotice"`
 }
 
 // PrivateSetting 私有配置。

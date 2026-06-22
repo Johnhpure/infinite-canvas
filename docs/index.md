@@ -22,6 +22,7 @@
 ## 合并与差异
 
 - [纯生图拆分与 PR #43 合并说明](upstream-merge-v0.3.3.md)
+- [上游非视频音频功能合并说明](upstream-non-av-agent-gemini.md)
 
 ## 项目进度
 
