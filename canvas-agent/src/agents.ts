@@ -36,7 +36,17 @@ async function runCodexTurnNow(prompt: string, emit: AgentEmit, attachments: Age
         files = await writeAttachmentFiles(attachments);
         codexApp ||= await CodexAppClient.start(emit);
         const threadId = await ensureCodexThread(codexApp, options);
-        await codexApp.startTurn(threadId, prompt, files);
+        try {
+            await codexApp.startTurn(threadId, prompt, files);
+        } catch (error) {
+            if (!options.threadId || !isUnavailableCodexThreadError(error)) throw error;
+            codexThreadId = "";
+            const thread = await codexApp.startThread(options.cwd);
+            codexThreadId = String(field(thread, "id") || "");
+            if (!codexThreadId) throw error;
+            emit("agent_event", { agent: "codex", type: "thread.started", thread_id: codexThreadId });
+            await codexApp.startTurn(codexThreadId, prompt, files);
+        }
     } catch (error) {
         emit("agent_error", { message: errorMessage(error) });
     } finally {
@@ -48,6 +58,7 @@ export async function startCodexThread(emit: AgentEmit, cwd?: string) {
     codexApp ||= await CodexAppClient.start(emit);
     const thread = await codexApp.startThread(cwd);
     codexThreadId = String(field(thread, "id") || "");
+    if (codexThreadId) emit("agent_event", { agent: "codex", type: "thread.started", thread_id: codexThreadId });
     return thread;
 }
 
@@ -314,7 +325,12 @@ async function loadCodexThread(emit: AgentEmit, threadId: string, cwd: string | 
 
 function isEmptyCodexThreadError(error: unknown) {
     const message = errorMessage(error);
-    return message.includes("not materialized yet") || message.includes("no rollout found");
+    return message.includes("not materialized yet") || message.includes("no rollout found") || message.includes("thread not found");
+}
+
+function isUnavailableCodexThreadError(error: unknown) {
+    const message = errorMessage(error);
+    return message.includes("thread not found") || message.includes("no rollout found") || message.includes("not materialized yet");
 }
 
 function assertThreadWorkspace(thread: unknown, cwd?: string) {
