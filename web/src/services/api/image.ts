@@ -49,7 +49,12 @@ type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-type ResponseApiOutputItem = Record<string, unknown> & ({ type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string });
+type ResponseApiOutputItem = Record<string, unknown> &
+    (
+        | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
+        | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string }
+        | { type?: "image_generation_call"; result?: unknown; image_url?: unknown; url?: unknown }
+    );
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
@@ -600,7 +605,8 @@ async function parseResponsesStreamResponse(response: Response, mime: string): P
             output.push(item as Record<string, unknown>);
         }
     });
-    const combinedOutput = [...((completedPayload?.output || []) as Record<string, unknown>[]), ...output];
+    const completedOutput = completedPayload ? (completedPayload as ResponsesApiResponse).output || [] : [];
+    const combinedOutput = [...(completedOutput as Record<string, unknown>[]), ...output];
     try {
         return parseResponsesPayload({ ...(completedPayload || {}), output: combinedOutput }, mime);
     } catch (error) {
@@ -811,7 +817,7 @@ function consumeResponseStreamText(state: ResponseStreamState, text: string, onD
     state.buffer += text;
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
-        if (!match) break;
+        if (!match || match.index == null) break;
         consumeResponseStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
         state.buffer = state.buffer.slice(match.index + match[0].length);
     }
@@ -943,7 +949,7 @@ function consumeGeminiStreamText(state: GeminiStreamState, text: string, onDelta
     state.buffer += text;
     for (;;) {
         const match = state.buffer.match(/\r?\n\r?\n/);
-        if (!match) break;
+        if (!match || match.index == null) break;
         consumeGeminiStreamBlock(state.buffer.slice(0, match.index), state, onDelta);
         state.buffer = state.buffer.slice(match.index + match[0].length);
     }

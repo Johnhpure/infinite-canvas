@@ -14,12 +14,13 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 使用没有 `gpt-image-2` 生图调用权限的 Claude360 APIKEY 登录时，需要确认提示用户更换有调用权限的 APIKEY。
 - 登录后发起 `gpt-image-2` 图片生成时，需要确认浏览器只请求 infinite-canvas `/api/v1/*`，由后端转发到 VPS 本机 Claude360/NewAPI，且后端转发请求带 `New-Api-Group: image`。
 - 创建/编辑工作流和 AI 创建工作流草稿需要确认默认接口模式为 Images API；只有用户明确选择或要求 Responses API 时才使用 Responses API。
+- 单图工作流点击“启动任务”后需要确认按钮进入“任务启动中...”状态、弹出明显的“工作流任务已启动”提示、运行弹窗自动关闭，连续点击不会创建多个生成任务。
 - 工作流 AI 创建和多图提示词生成需要确认默认文本模型为 `gpt-5.5`，并仍通过 Claude360 平台模型渠道调用。
 - Docker 部署需要确认 `.env` 中 `CLAUDE360_API_BASE_URL=http://host.docker.internal:3000` 能从 infinite-canvas 容器访问宿主机 NewAPI；如果两个服务放在同一个 compose network，则改成 `http://new-api:3000` 后复测。
 - 管理员需要确认 `/admin` 使用管理员账号密码登录，后台子路由未登录时跳回 `/admin?redirect=...`。
 - 右上角需要确认已移除版本更新提示和 GitHub 仓库链接。
 - 右上角账户区需要确认不再展示当前算力点余额，头像菜单只保留“退出登录”。
-- 顶部导航需要确认画布入口文案为 `Claude360 Copilot`。
+- 顶部导航需要确认画布入口文案为 `画布`。
 - 使用两个不同 Claude360 APIKEY 分别登录后，需要确认画布、历史、素材、工作流和服务端文件互相隔离；直接访问其他用户的 `/api/files/{id}` 或 `/api/files/{id}/content` 应不可见，页面展示服务端图片应改用登录态换取的短期签名链接。
 - 参考图上传后需要确认返回的是带 `expires` 和 `signature` 的完整访问地址；去掉签名访问 `/api/media/references/{id}` 应返回 404，带签名的地址仍可被上游模型服务拉取。
 

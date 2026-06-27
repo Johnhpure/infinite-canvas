@@ -215,7 +215,7 @@ export function CreativeWorkflowWorkspace({
     onWorkflowTaskSuccess?: (task: WorkflowExternalTaskSuccess) => void;
     onWorkflowTaskFailure?: (task: WorkflowExternalTaskFailure) => void;
 } = {}) {
-    const { message, modal } = App.useApp();
+    const { message, modal, notification } = App.useApp();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const effectiveConfig = useEffectiveConfig();
     const isAiConfigReady = useConfigStore((state) => state.isAiConfigReady);
@@ -233,6 +233,7 @@ export function CreativeWorkflowWorkspace({
     const [workflowTasks, setWorkflowTasks] = useState<WorkflowTask[]>([]);
     const [seriesDrafts, setSeriesDrafts] = useState<SeriesPromptDraft[]>([]);
     const [seriesDraftLoading, setSeriesDraftLoading] = useState(false);
+    const [workflowStarting, setWorkflowStarting] = useState(false);
     const [seriesBatchAppend, setSeriesBatchAppend] = useState("");
     const [now, setNow] = useState(Date.now());
     const [query, setQuery] = useState("");
@@ -250,6 +251,7 @@ export function CreativeWorkflowWorkspace({
     const [agentAssetPickerOpen, setAgentAssetPickerOpen] = useState(false);
     const workflowSyncEnabledRef = useRef(false);
     const seriesDraftsLoadedRef = useRef(false);
+    const workflowStartLockRef = useRef(false);
 
     const filteredWorkflows = useMemo(() => {
         const text = query.trim().toLowerCase();
@@ -330,6 +332,8 @@ export function CreativeWorkflowWorkspace({
 
     const openRunner = (workflow: CreativeWorkflow) => {
         seriesDraftsLoadedRef.current = false;
+        workflowStartLockRef.current = false;
+        setWorkflowStarting(false);
         setRunningWorkflow(workflow);
         setInputValues(createDefaultInputValues(workflow));
         setWorkflowReferences([]);
@@ -344,11 +348,15 @@ export function CreativeWorkflowWorkspace({
         }
     };
 
-    const closeRunner = () => {
+    const closeRunner = (options?: { resetStartLock?: boolean }) => {
         setRunningWorkflow(null);
         setSeriesDrafts([]);
         setSeriesBatchAppend("");
         seriesDraftsLoadedRef.current = false;
+        if (options?.resetStartLock !== false) {
+            workflowStartLockRef.current = false;
+            setWorkflowStarting(false);
+        }
     };
 
     const addWorkflowReferences = async (files?: FileList | null) => {
@@ -575,6 +583,10 @@ export function CreativeWorkflowWorkspace({
 
     const runWorkflow = async () => {
         if (!runningWorkflow) return;
+        if (workflowStartLockRef.current) {
+            message.info("任务已经开始，请勿重复点击");
+            return;
+        }
         const missing = runningWorkflow.variables.find((item) => item.required && !String(inputValues[item.key] || "").trim());
         if (missing) {
             message.error(`请填写 ${missing.label}`);
@@ -584,7 +596,13 @@ export function CreativeWorkflowWorkspace({
             await generateSeriesPromptDrafts();
             return;
         }
-        void startWorkflowImageTask(runningWorkflow, renderedPrompt, { ...inputValues }, [...workflowReferences]);
+        workflowStartLockRef.current = true;
+        setWorkflowStarting(true);
+        const started = startWorkflowImageTask(runningWorkflow, renderedPrompt, { ...inputValues }, [...workflowReferences]);
+        if (!started) {
+            workflowStartLockRef.current = false;
+            setWorkflowStarting(false);
+        }
     };
 
     const generateSeriesPromptDrafts = async () => {
@@ -691,7 +709,7 @@ export function CreativeWorkflowWorkspace({
         if (!isAiConfigReady(runConfig, model)) {
             message.warning("请先完成 API 配置");
             openConfigDialog(true);
-            return;
+            return false;
         }
 
         const startedAt = Date.now();
@@ -732,8 +750,21 @@ export function CreativeWorkflowWorkspace({
             },
             ...value,
         ]);
-        message.success(seriesTitle ? `${seriesTitle} 已开始生成` : "工作流任务已开始");
-        return executeWorkflowTask({ taskId, workflow, prompt: promptSnapshot, inputSnapshot, references: referencesSnapshot, runConfig, taskConfig, model, count, startedAt, performanceStartedAt, seriesDraftId, seriesTitle, seriesIndex });
+        const taskPromise = executeWorkflowTask({ taskId, workflow, prompt: promptSnapshot, inputSnapshot, references: referencesSnapshot, runConfig, taskConfig, model, count, startedAt, performanceStartedAt, seriesDraftId, seriesTitle, seriesIndex });
+        if (seriesTitle) {
+            message.success(`${seriesTitle} 已开始生成`);
+            return taskPromise;
+        } else {
+            notification.success({
+                message: "工作流任务已启动",
+                description: `「${workflow.name || "未命名工作流"}」已经加入生成队列，弹窗将自动关闭，结果会写入生图历史。`,
+                duration: 4,
+                placement: "topRight",
+            });
+            closeRunner({ resetStartLock: false });
+        }
+        void taskPromise;
+        return true;
     };
 
     const executeWorkflowTask = async ({
@@ -1125,7 +1156,7 @@ export function CreativeWorkflowWorkspace({
                     </aside>
                 </div>
             </Modal>
-            <Modal title={runningWorkflow?.name || "运行工作流"} open={Boolean(runningWorkflow)} width={980} onCancel={closeRunner} footer={null} destroyOnHidden>
+            <Modal title={runningWorkflow?.name || "运行工作流"} open={Boolean(runningWorkflow)} width={980} onCancel={() => closeRunner()} footer={null} destroyOnHidden>
                 {runningWorkflow ? (
                     <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
                         <div className="space-y-3">
@@ -1183,8 +1214,16 @@ export function CreativeWorkflowWorkspace({
                                     <div className="mt-3 rounded-md border border-dashed border-stone-300 py-5 text-center text-xs text-stone-500 dark:border-stone-800">未添加参考图</div>
                                 )}
                             </div>
-                            <Button block type="primary" size="large" loading={seriesDraftLoading} icon={runningWorkflow.mode === "multi_image_series" ? <Layers3 className="size-4" /> : <Play className="size-4" />} onClick={() => void runWorkflow()}>
-                                {runningWorkflow.mode === "multi_image_series" ? "生成提示词" : "启动任务"}
+                            <Button
+                                block
+                                type="primary"
+                                size="large"
+                                loading={runningWorkflow.mode === "multi_image_series" ? seriesDraftLoading : workflowStarting}
+                                disabled={runningWorkflow.mode !== "multi_image_series" && workflowStarting}
+                                icon={runningWorkflow.mode === "multi_image_series" ? <Layers3 className="size-4" /> : <Play className="size-4" />}
+                                onClick={() => void runWorkflow()}
+                            >
+                                {runningWorkflow.mode === "multi_image_series" ? "生成提示词" : workflowStarting ? "任务启动中..." : "启动任务"}
                             </Button>
                         </div>
                         <div className="space-y-3">

@@ -29,7 +29,10 @@ function parseFeatures(features: string): string[] {
         const parsed = JSON.parse(features);
         if (Array.isArray(parsed)) return parsed.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim());
     } catch {
-        return features.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        return features
+            .split(/\r?\n/)
+            .map((item) => item.trim())
+            .filter(Boolean);
     }
     return [];
 }
@@ -93,7 +96,7 @@ export default function AdminPlansPage() {
             width: 110,
             render: (_, item) => <Typography.Text strong>{formatPrice(item.price)}</Typography.Text>,
         },
-        { title: "时长", dataIndex: "durationDays", width: 90, render: (value: number) => `${value} 天` },
+        { title: "时长", dataIndex: "durationDays", width: 90, render: (_, item) => `${item.durationDays} 天` },
         { title: "赠送算力点", dataIndex: "creditsGranted", width: 110 },
         {
             title: "权益",
@@ -113,7 +116,7 @@ export default function AdminPlansPage() {
             render: (_, item) => <Tag color={item.enabled ? "green" : "default"}>{item.enabled ? "上架" : "下架"}</Tag>,
         },
         { title: "排序", dataIndex: "sort", width: 70 },
-        { title: "更新时间", dataIndex: "updatedAt", width: 160, render: (value: string) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "-") },
+        { title: "更新时间", dataIndex: "updatedAt", width: 160, render: (_, item) => (item.updatedAt ? dayjs(item.updatedAt).format("YYYY-MM-DD HH:mm") : "-") },
         {
             title: "操作",
             key: "actions",
@@ -140,14 +143,7 @@ export default function AdminPlansPage() {
                         <Row gutter={16} align="bottom">
                             <Col flex="360px">
                                 <Form.Item label="关键词">
-                                    <Input.Search
-                                        value={keywordText}
-                                        placeholder="搜索套餐名称、等级或描述"
-                                        allowClear
-                                        enterButton={<SearchOutlined />}
-                                        onSearch={() => searchPlans(keywordText)}
-                                        onChange={(event) => setKeywordText(event.target.value)}
-                                    />
+                                    <Input.Search value={keywordText} placeholder="搜索套餐名称、等级或描述" allowClear enterButton={<SearchOutlined />} onSearch={() => searchPlans(keywordText)} onChange={(event) => setKeywordText(event.target.value)} />
                                 </Form.Item>
                             </Col>
                             <Col flex="none">
