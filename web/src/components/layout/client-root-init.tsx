@@ -21,10 +21,9 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     const loadPublicSettings = useConfigStore((state) => state.loadPublicSettings);
     const publicSettings = useConfigStore((state) => state.publicSettings);
     const updateConfig = useConfigStore((state) => state.updateConfig);
-    const openConfigDialog = useConfigStore((state) => state.openConfigDialog);
     const hydrateAccountAssets = useAssetStore((state) => state.hydrateAccountAssets);
     const stopAccountAssetSync = useAssetStore((state) => state.stopAccountAssetSync);
-    const isLoginPage = pathname === "/login" || pathname === "/admin/login";
+    const isLoginPage = pathname === "/login";
 
     useEffect(() => {
         void loadPublicSettings();
@@ -62,16 +61,9 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
         searchParams.delete("apiKey");
         searchParams.delete("apikey");
         window.history.replaceState(null, "", `${window.location.pathname}${searchParams.size ? `?${searchParams}` : ""}${window.location.hash}`);
-        if (!publicSettings.modelChannel.allowCustomChannel) {
-            openConfigDialog(false);
-            message.error("后台未允许用户自定义渠道，请联系管理员进行配置");
-            return;
-        }
-        updateConfig("channelMode", "local");
-        if (baseUrl) updateConfig("baseUrl", baseUrl);
-        if (apiKey) updateConfig("apiKey", apiKey);
-        openConfigDialog(false);
-    }, [message, openConfigDialog, publicSettings, updateConfig]);
+        updateConfig("channelMode", "remote");
+        message.warning("Claude360 平台模型由服务端统一转发，已忽略自定义模型渠道参数");
+    }, [message, publicSettings, updateConfig]);
 
     useEffect(() => {
         if (token && user?.id) {

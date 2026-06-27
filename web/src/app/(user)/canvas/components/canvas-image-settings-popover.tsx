@@ -73,7 +73,7 @@ export function CanvasImageSettingsPopover({ config, onConfigChange, onOpenChang
                     onClick={() => updateOpen(!open)}
                 >
                     <span className="truncate">
-                        {imageQualityLabel(quality)} · {imageSizeLabel(activeSize)} · {imageFormatLabel(outputFormat)} · {count} 张
+                        {imageSizeLabel(activeSize)} · {imageQualityLabel(quality)} · {imageFormatLabel(outputFormat)} · {count} 张
                     </span>
                 </Button>
             </span>

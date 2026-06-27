@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import { apiGet } from "@/services/api/request";
+import { IMAGE_SIZE_PRESETS } from "@/lib/image-size-presets";
 import type { AdminPublicSettings } from "@/services/api/admin";
 
 export type LocalModelChannel = {
@@ -60,8 +61,8 @@ export const OPENAI_BASE_URL = "https://api.openai.com";
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
 
 export const defaultConfig: AiConfig = {
-    channelMode: "local",
-    baseUrl: OPENAI_BASE_URL,
+    channelMode: "remote",
+    baseUrl: "",
     apiKey: "",
     localChannels: [],
     imageChannelId: "",
@@ -84,7 +85,7 @@ export const defaultConfig: AiConfig = {
     models: [],
     publicChannels: [],
     quality: "auto",
-    size: "1:1",
+    size: "1024x1024",
     outputFormat: "png",
     outputCompression: "100",
     moderation: "auto",
@@ -108,25 +109,39 @@ type ConfigStore = {
 };
 
 function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null) {
-    const channelMode = modelChannel?.allowCustomChannel ? config.channelMode : "remote";
-    if (channelMode === "local" || !modelChannel) return { ...normalizeLocalConfig(config), channelMode };
-    const models = modelChannel.availableModels;
-    const fallbackModel = modelChannel.defaultModel || models[0] || "";
-    const imageChannelId = validChannelId(config.imageChannelId, modelChannel.channels, config.imageModel) || channelIdForModel(modelChannel.channels, modelChannel.defaultImageModel || fallbackModel);
-    const textChannelId = validChannelId(config.textChannelId, modelChannel.channels, config.textModel) || channelIdForModel(modelChannel.channels, modelChannel.defaultTextModel || fallbackModel);
+    const channelMode = "remote";
+    const publicChannels = mergePublicChannels(modelChannel?.channels || [], config.publicChannels || []);
+    const models = Array.from(new Set([...(modelChannel?.availableModels || []), ...(config.models || []), ...publicChannels.flatMap((channel) => channel.models)]));
+    const fallbackModel = modelChannel?.defaultModel || models[0] || config.model || "";
+    const imageDefault = modelChannel?.defaultImageModel || (models.includes(config.imageModel) ? config.imageModel : fallbackModel);
+    const textDefault = modelChannel?.defaultTextModel || (models.includes(config.textModel) ? config.textModel : fallbackModel);
+    const imageChannelId = validChannelId(config.imageChannelId, publicChannels, config.imageModel) || channelIdForModel(publicChannels, imageDefault);
+    const textChannelId = validChannelId(config.textChannelId, publicChannels, config.textModel) || channelIdForModel(publicChannels, textDefault);
     return {
         ...config,
         channelMode,
         models,
-        publicChannels: modelChannel.channels || [],
+        publicChannels,
         model: models.includes(config.model) ? config.model : fallbackModel,
-        imageModel: models.includes(config.imageModel) ? config.imageModel : modelChannel.defaultImageModel || fallbackModel,
-        textModel: models.includes(config.textModel) ? config.textModel : modelChannel.defaultTextModel || fallbackModel,
+        imageModel: models.includes(config.imageModel) ? config.imageModel : imageDefault,
+        textModel: models.includes(config.textModel) ? config.textModel : textDefault,
         imageChannelId,
         textChannelId,
-        systemPrompt: modelChannel.systemPrompts?.image || modelChannel.systemPrompt,
-        systemPrompts: modelChannel.systemPrompts || defaultConfig.systemPrompts,
+        activeChannelId: "",
+        baseUrl: "",
+        apiKey: "",
+        localChannels: [],
+        systemPrompt: modelChannel?.systemPrompts?.image || modelChannel?.systemPrompt || config.systemPrompt,
+        systemPrompts: modelChannel?.systemPrompts || config.systemPrompts || defaultConfig.systemPrompts,
     };
+}
+
+function mergePublicChannels(primary: AdminPublicSettings["modelChannel"]["channels"], secondary: AdminPublicSettings["modelChannel"]["channels"]) {
+    const map = new Map<string, AdminPublicSettings["modelChannel"]["channels"][number]>();
+    [...primary, ...secondary].forEach((channel) => {
+        if (channel.id) map.set(channel.id, channel);
+    });
+    return Array.from(map.values());
 }
 
 function normalizeLocalConfig(config: AiConfig) {
@@ -139,7 +154,7 @@ export function normalizeLocalChannels(config: Partial<AiConfig>) {
     const channels = Array.isArray(config.localChannels) ? config.localChannels : [];
     const normalized = channels.map((channel, index) => ({
         id: channel.id || `local-${index + 1}`,
-        protocol: channel.protocol === "gemini" ? "gemini" as const : "openai" as const,
+        protocol: channel.protocol === "gemini" ? ("gemini" as const) : ("openai" as const),
         name: typeof channel.name === "string" ? channel.name : `本地渠道 ${index + 1}`,
         baseUrl: channel.baseUrl || (channel.protocol === "gemini" ? GEMINI_BASE_URL : ""),
         apiKey: channel.apiKey || "",
@@ -176,7 +191,11 @@ export const useConfigStore = create<ConfigStore>()(
                 set((state) => ({
                     config: {
                         ...state.config,
-                        [key]: value,
+                        [key]: key === "size" ? normalizeImageSize(String(value)) : value,
+                        channelMode: "remote",
+                        baseUrl: "",
+                        apiKey: "",
+                        localChannels: [],
                     },
                 })),
             loadPublicSettings: async () => {
@@ -198,22 +217,23 @@ export const useConfigStore = create<ConfigStore>()(
             partialize: (state) => ({ config: state.config }),
             merge: (persisted, current) => {
                 const config = { ...defaultConfig, ...((persisted as Partial<ConfigStore>).config || {}) };
-                const localChannels = normalizeLocalChannels(config);
+                const size = normalizeImageSize(config.size);
                 return {
                     ...current,
                     config: {
                         ...config,
-                        localChannels,
-                        baseUrl: localChannels[0]?.baseUrl || config.baseUrl,
-                        apiKey: localChannels[0]?.apiKey || config.apiKey,
-                        imageChannelId: config.imageChannelId || localChannels[0]?.id || "",
-                        textChannelId: config.textChannelId || localChannels[0]?.id || "",
-                        activeChannelId: config.activeChannelId || "",
-                        channelMode: config.channelMode || "remote",
+                        localChannels: [],
+                        baseUrl: "",
+                        apiKey: "",
+                        imageChannelId: config.imageChannelId || "",
+                        textChannelId: config.textChannelId || "",
+                        activeChannelId: "",
+                        channelMode: "remote",
                         apiMode: config.apiMode === "responses" ? "responses" : "images",
                         imageModel: config.imageModel || config.model,
                         textModel: config.textModel || config.model,
                         timeout: config.timeout || "600",
+                        size,
                         streamPartialImages: config.streamPartialImages || "1",
                         responseFormatB64Json: config.responseFormatB64Json !== false,
                         outputFormat: ["jpeg", "webp"].includes(config.outputFormat) ? config.outputFormat : "png",
@@ -231,6 +251,15 @@ export const useConfigStore = create<ConfigStore>()(
         },
     ),
 );
+
+function normalizeImageSize(size: string) {
+    const value = String(size || "")
+        .trim()
+        .toLowerCase();
+    if (!value || value === "auto") return defaultConfig.size;
+    if (/^\d+x\d+$/.test(value)) return value;
+    return IMAGE_SIZE_PRESETS.find((item) => item.ratio === value)?.sizes["1K"] || defaultConfig.size;
+}
 
 export function useEffectiveConfig() {
     const config = useConfigStore((state) => state.config);

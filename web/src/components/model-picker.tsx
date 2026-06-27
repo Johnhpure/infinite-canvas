@@ -24,12 +24,13 @@ export function ModelPicker({ config, value, channelId, onChange, className, ful
     const channelOptions = useMemo(() => {
         const channels =
             config.channelMode === "remote"
-                ? config.publicChannels.map((channel) => ({ id: channel.id, name: channel.name || "云端渠道", baseUrl: channel.baseUrl, models: channel.models }))
+                ? config.publicChannels.map((channel) => ({ id: channel.id, name: channel.name || "Claude360 平台模型", baseUrl: channel.baseUrl, models: channel.models }))
                 : normalizeLocalChannels(config).map((channel) => ({ id: channel.id, name: channel.name || "本地渠道", baseUrl: channel.baseUrl, models: channel.models }));
         return channels.flatMap((channel) => channel.models.map((model) => ({ key: `${channel.id}::${model}`, channelId: channel.id, channelName: channel.name, model })));
     }, [config]);
     const options = useMemo(() => {
-        const existing = value && !channelOptions.some((item) => item.model === value && (!channelId || item.channelId === channelId)) ? [{ key: `${channelId || "__current__"}::${value}`, channelId: channelId || "", channelName: "当前", model: value }] : [];
+        const existing =
+            value && !channelOptions.some((item) => item.model === value && (!channelId || item.channelId === channelId)) ? [{ key: `${channelId || "__current__"}::${value}`, channelId: channelId || "", channelName: "当前", model: value }] : [];
         return [...existing, ...channelOptions];
     }, [channelId, channelOptions, value]);
     const current = value || "";
@@ -92,7 +93,7 @@ export function ModelPicker({ config, value, channelId, onChange, className, ful
                     ))
                 ) : (
                     <SelectItem value="__empty__" disabled>
-                        {config.channelMode === "remote" ? "暂无可用模型" : "请先到配置里拉取模型列表"}
+                        {config.channelMode === "remote" ? "暂无可用模型，请重新登录或联系管理员" : "请先到配置里拉取模型列表"}
                     </SelectItem>
                 )}
             </SelectContent>

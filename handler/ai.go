@@ -46,20 +46,31 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		Fail(w, "未登录或权限不足")
 		return
 	}
-	unitCredits, err := service.ModelCost(modelName)
+	channel, isClaude360Channel, err := service.Claude360ModelChannelForUser(user.ID)
 	if err != nil {
-		log.Printf("AI proxy read model cost failed: model=%s err=%v", modelName, err)
+		log.Printf("AI proxy read Claude360 key failed: user=%s err=%v", user.ID, err)
 		Fail(w, "AI 接口请求失败")
 		return
+	}
+	if !isClaude360Channel {
+		channel, err = service.SelectModelChannelForModel(modelName, r.Header.Get("X-Model-Channel-ID"))
+		if err != nil {
+			log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
+			Fail(w, "AI 接口请求失败")
+			return
+		}
+	}
+	unitCredits := 0
+	if !isClaude360Channel {
+		unitCredits, err = service.ModelCost(modelName)
+		if err != nil {
+			log.Printf("AI proxy read model cost failed: model=%s err=%v", modelName, err)
+			Fail(w, "AI 接口请求失败")
+			return
+		}
 	}
 	requestCount := readAIRequestCount(body, contentType)
 	credits := unitCredits * requestCount
-	channel, err := service.SelectModelChannelForModel(modelName, r.Header.Get("X-Model-Channel-ID"))
-	if err != nil {
-		log.Printf("AI proxy select channel failed: model=%s err=%v", modelName, err)
-		Fail(w, "AI 接口请求失败")
-		return
-	}
 	logContext := aiLogContext{
 		StartedAt:       startedAt,
 		Endpoint:        path,

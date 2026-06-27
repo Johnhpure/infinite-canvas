@@ -15,6 +15,10 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type claude360APIKeyLoginRequest struct {
+	APIKey string `json:"apiKey"`
+}
+
 type registerRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -49,6 +53,17 @@ func Login(w http.ResponseWriter, r *http.Request) {
 	var request loginRequest
 	_ = json.NewDecoder(r.Body).Decode(&request)
 	session, err := service.Login(request.Username, request.Password)
+	if err != nil {
+		FailError(w, err)
+		return
+	}
+	OK(w, session)
+}
+
+func Claude360APIKeyLogin(w http.ResponseWriter, r *http.Request) {
+	var request claude360APIKeyLoginRequest
+	_ = json.NewDecoder(r.Body).Decode(&request)
+	session, err := service.LoginWithClaude360APIKey(request.APIKey)
 	if err != nil {
 		FailError(w, err)
 		return

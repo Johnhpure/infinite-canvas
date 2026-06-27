@@ -6,6 +6,7 @@ import { App, Button, Card, Drawer, Empty, Form, Image, Input, Modal, Pagination
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
+import { withBasePath } from "@/lib/base-path";
 import { formatBytes, readFileAsDataUrl } from "@/lib/image-utils";
 import { uploadImage } from "@/services/image-storage";
 import { cn } from "@/lib/utils";
@@ -166,7 +167,7 @@ export default function AssetsPage() {
         } else {
             const hideLoading = message.loading("正在下载媒体文件...", 0);
             try {
-                const response = await fetch(url.startsWith("http") ? `/api/proxy-image?url=${encodeURIComponent(url)}` : url);
+                const response = await fetch(url.startsWith("http") ? withBasePath(`/api/proxy-image?url=${encodeURIComponent(url)}`) : withBasePath(url));
                 const blob = await response.blob();
                 saveAs(blob, filename);
             } catch (error) {

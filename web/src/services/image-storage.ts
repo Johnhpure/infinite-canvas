@@ -3,12 +3,14 @@
 import localforage from "localforage";
 
 import { nanoid } from "nanoid";
+import { withBasePath } from "@/lib/base-path";
 import { readImageMeta } from "@/lib/image-utils";
 import { apiGet } from "@/services/api/request";
 import { useUserStore } from "@/stores/use-user-store";
 
 export type UploadedImage = {
     url: string;
+    urlExpires?: number;
     storageKey: string;
     width: number;
     height: number;
@@ -31,18 +33,24 @@ export type UserStorageProvider = {
 
 const store = localforage.createInstance({ name: "infinite-canvas", storeName: "image_files" });
 const objectUrls = new Map<string, string>();
-const serverUrls = new Map<string, string>();
+const serverUrls = new Map<string, { url: string; expires?: number }>();
 export const USER_STORAGE_PROVIDER_KEY = "infinite-canvas:user_storage_provider";
 let storageConfigPromise: Promise<{ mode: string; allowUserProvider: boolean }> | null = null;
+
+type ServerFileAccess = {
+    id?: string;
+    url: string;
+    urlExpires?: number;
+};
 
 function getProxyUrl(url: string): string {
     if (url.startsWith("http://") || url.startsWith("https://")) {
         if (typeof window !== "undefined" && url.includes(window.location.host)) {
             return url;
         }
-        return `/api/proxy-image?url=${encodeURIComponent(url)}`;
+        return withBasePath(`/api/proxy-image?url=${encodeURIComponent(url)}`);
     }
-    return url;
+    return withBasePath(url);
 }
 
 export async function uploadImage(input: string | Blob): Promise<UploadedImage> {
@@ -81,7 +89,6 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
     if (!storageKey) return fallback;
     if (storageKey.startsWith("server:")) {
         const id = storageKey.slice("server:".length);
-        if (fallback && !fallback.startsWith("blob:")) return fallback;
         const cached = objectUrls.get(storageKey);
         if (cached) return cached;
         const blob = await store.getItem<Blob>(storageKey).catch(() => null);
@@ -90,13 +97,9 @@ export async function resolveImageUrl(storageKey?: string, fallback = "") {
             objectUrls.set(storageKey, url);
             return url;
         }
-        const cachedUrl = serverUrls.get(id);
+        const cachedUrl = getCachedServerUrl(id);
         if (cachedUrl) return cachedUrl;
-        const info = await apiGet<{ publicUrl?: string }>(`/api/files/${encodeURIComponent(id)}`).catch(() => null);
-        if (!info) return fallback;
-        const url = info?.publicUrl || `/api/files/${encodeURIComponent(id)}/content`;
-        serverUrls.set(id, url);
-        return url;
+        return getServerAccessUrl(id).catch(() => (isSafeServerFallback(fallback) ? withBasePath(fallback) : ""));
     }
     const cached = objectUrls.get(storageKey);
     if (cached) return cached;
@@ -120,15 +123,44 @@ async function maybeUploadImageToServer(blob: Blob): Promise<UploadedImage | nul
     const formData = new FormData();
     formData.append("file", blob, `image-${nanoid()}.${imageExtension(blob.type)}`);
     if (userProvider) formData.append("provider", JSON.stringify(toProviderPayload(userProvider)));
-    const response = await fetch("/api/v1/files", { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData });
+    const response = await fetch(withBasePath("/api/v1/files"), { method: "POST", headers: { Authorization: `Bearer ${token}` }, body: formData });
     const payload = (await response.json().catch(() => null)) as { code?: number; msg?: string; data?: UploadedImage } | null;
     if (!response.ok || payload?.code !== 0 || !payload.data) {
         if (config.mode === "hybrid") return null;
         throw new Error(payload?.msg || "服务端图片上传失败");
     }
-    const meta = await readImageMeta(payload.data.url);
-    if (payload.data.storageKey?.startsWith("server:")) serverUrls.set(payload.data.storageKey.slice("server:".length), payload.data.url);
-    return { ...payload.data, width: payload.data.width || meta.width, height: payload.data.height || meta.height, mimeType: payload.data.mimeType || blob.type || "image/png", bytes: payload.data.bytes || blob.size };
+    const uploadedUrl = withBasePath(payload.data.url);
+    const meta = await readImageMeta(uploadedUrl);
+    if (payload.data.storageKey?.startsWith("server:")) serverUrls.set(payload.data.storageKey.slice("server:".length), { url: uploadedUrl, expires: payload.data.urlExpires });
+    return { ...payload.data, url: uploadedUrl, width: payload.data.width || meta.width, height: payload.data.height || meta.height, mimeType: payload.data.mimeType || blob.type || "image/png", bytes: payload.data.bytes || blob.size };
+}
+
+function getCachedServerUrl(id: string) {
+    const cached = serverUrls.get(id);
+    if (!cached) return "";
+    if (cached.expires && cached.expires <= Math.floor(Date.now() / 1000) + 60) {
+        serverUrls.delete(id);
+        return "";
+    }
+    return cached.url;
+}
+
+async function getServerAccessUrl(id: string) {
+    const token = useUserStore.getState().token;
+    if (!token) throw new Error("请先登录");
+    const access = await apiGet<ServerFileAccess>(`/api/v1/files/${encodeURIComponent(id)}/access-url`, undefined, token);
+    if (!access.url) throw new Error("读取服务端图片失败");
+    const url = withBasePath(access.url);
+    serverUrls.set(id, { url, expires: access.urlExpires });
+    return url;
+}
+
+function isSignedServerUrl(url?: string) {
+    return Boolean(url && url.includes("/api/files/") && url.includes("expires=") && url.includes("signature="));
+}
+
+function isSafeServerFallback(url?: string) {
+    return Boolean(url && (url.startsWith("data:") || isSignedServerUrl(url)));
 }
 
 async function loadStorageConfig() {
@@ -160,10 +192,11 @@ export async function imageToDataUrl(image: { url?: string; dataUrl?: string; st
 
 export async function imageToBlob(image: { url?: string; dataUrl?: string; storageKey?: string }) {
     const serverObjectId = image.storageKey?.startsWith("server:") ? image.storageKey.slice("server:".length) : "";
+    const serverUrl = serverObjectId ? await resolveImageUrl(image.storageKey, image.url || image.dataUrl || "") : "";
     const urls = [
-        image.dataUrl && !image.dataUrl.startsWith("blob:") ? image.dataUrl : "",
-        image.url && !image.url.startsWith("blob:") ? image.url : "",
-        serverObjectId ? `/api/files/${encodeURIComponent(serverObjectId)}/content` : "",
+        image.dataUrl?.startsWith("data:") ? image.dataUrl : "",
+        !serverObjectId && image.url && !image.url.startsWith("blob:") ? image.url : "",
+        serverUrl,
         !serverObjectId ? await resolveImageUrl(image.storageKey, image.url || image.dataUrl || "") : "",
     ].filter((url, index, list): url is string => Boolean(url) && list.indexOf(url) === index);
     if (!urls.length) throw new Error("读取图片失败");
@@ -283,7 +316,7 @@ async function deleteServerImage(storageKey: string) {
     serverUrls.delete(id);
     if (!token) return;
     const provider = loadUserStorageProvider();
-    const response = await fetch(`/api/v1/files/${encodeURIComponent(id)}`, {
+    const response = await fetch(withBasePath(`/api/v1/files/${encodeURIComponent(id)}`), {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(provider ? { provider: toProviderPayload(provider) } : {}),

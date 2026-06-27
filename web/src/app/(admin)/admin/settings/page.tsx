@@ -36,7 +36,7 @@ const emptySettings: AdminSettings = {
             defaultTextModel: "",
             systemPrompt: "",
             systemPrompts: { image: "", text: "", workflow: "", workflowAgent: "" },
-            allowCustomChannel: true,
+            allowCustomChannel: false,
         },
         auth: { allowRegister: true, linuxDo: { enabled: false }, oidc: { enabled: false, displayName: "", iconUrl: "" } },
         storage: { mode: "local_indexeddb", allowUserProvider: false },
@@ -59,7 +59,24 @@ const emptySettings: AdminSettings = {
     },
 };
 const emptyChannel: AdminModelChannel = { id: "", protocol: "openai", name: "", baseUrl: "", apiKey: "", models: [], weight: 1, timeout: 600, enabled: true, remark: "" };
-const emptyStorageProvider: AdminStorageProvider = { id: "", name: "", type: "s3", endpoint: "", region: "auto", bucket: "", accessKeyId: "", secretAccessKey: "", publicBaseUrl: "", pathPrefix: "images", weight: 1, enabled: true, ownerUserId: "", capacityBytes: 0, capacityCheckedAt: "", capacityExceeded: false };
+const emptyStorageProvider: AdminStorageProvider = {
+    id: "",
+    name: "",
+    type: "s3",
+    endpoint: "",
+    region: "auto",
+    bucket: "",
+    accessKeyId: "",
+    secretAccessKey: "",
+    publicBaseUrl: "",
+    pathPrefix: "images",
+    weight: 1,
+    enabled: true,
+    ownerUserId: "",
+    capacityBytes: 0,
+    capacityCheckedAt: "",
+    capacityExceeded: false,
+};
 
 type SettingsTabKey = "public" | "private";
 type EditorMode = "visual" | "json";
@@ -721,11 +738,7 @@ export default function AdminSettingsPage() {
                                             </Form.Item>
                                         </Col>
                                         <Col xs={24} md={18}>
-                                            <Form.Item
-                                                name={["public", "membership", "paymentMethods"]}
-                                                label="支持的支付方式"
-                                                extra="留空时按 ZPay 默认渠道处理"
-                                            >
+                                            <Form.Item name={["public", "membership", "paymentMethods"]} label="支持的支付方式" extra="留空时按 ZPay 默认渠道处理">
                                                 <Checkbox.Group
                                                     options={[
                                                         { label: "支付宝", value: "alipay" },
@@ -953,9 +966,7 @@ export default function AdminSettingsPage() {
                                 </Card>
                                 <Card size="small" title="微信支付直连">
                                     <Flex vertical gap={14}>
-                                        <Typography.Text type="secondary">
-                                            微信支付 V3 商户接入。需 AppID、商户号 MchID、APIv3 密钥、商户证书序列号和商户私钥（apiclient_key.pem 内容）。下单走 Native 扫码，前端会用 code_url 渲染二维码。
-                                        </Typography.Text>
+                                        <Typography.Text type="secondary">微信支付 V3 商户接入。需 AppID、商户号 MchID、APIv3 密钥、商户证书序列号和商户私钥（apiclient_key.pem 内容）。下单走 Native 扫码，前端会用 code_url 渲染二维码。</Typography.Text>
                                         <Row gutter={16}>
                                             <Col xs={24} md={6}>
                                                 <Form.Item name={["private", "payment", "wechat", "enabled"]} label="启用微信支付" valuePropName="checked">
@@ -1090,7 +1101,12 @@ export default function AdminSettingsPage() {
                             </Col>
                             <Col span={12}>
                                 <Form.Item name="protocol" label="协议">
-                                    <Select options={[{ label: "OpenAI", value: "openai" }, { label: "Gemini", value: "gemini" }]} />
+                                    <Select
+                                        options={[
+                                            { label: "OpenAI", value: "openai" },
+                                            { label: "Gemini", value: "gemini" },
+                                        ]}
+                                    />
                                 </Form.Item>
                             </Col>
                             <Col span={12}>

@@ -16,12 +16,7 @@ func New() *gin.Engine {
 	api.GET("/health", func(c *gin.Context) {
 		c.String(http.StatusOK, "ok")
 	})
-	api.POST("/auth/register", gin.WrapF(handler.Register))
-	api.POST("/auth/login", gin.WrapF(handler.Login))
-	api.GET("/auth/linux-do/authorize", gin.WrapF(handler.LinuxDoAuthorize))
-	api.GET("/auth/linux-do/callback", gin.WrapF(handler.LinuxDoCallback))
-	api.GET("/auth/oidc/authorize", gin.WrapF(handler.OIDCAuthorize))
-	api.GET("/auth/oidc/callback", gin.WrapF(handler.OIDCCallback))
+	api.POST("/auth/claude360-key-login", gin.WrapF(handler.Claude360APIKeyLogin))
 	api.GET("/auth/me", middleware.OptionalAuth, gin.WrapF(handler.CurrentUser))
 	api.GET("/settings", gin.WrapF(handler.Settings))
 	api.GET("/storage/config", gin.WrapF(handler.StorageConfig))
@@ -29,10 +24,10 @@ func New() *gin.Engine {
 	api.GET("/media/references/:id", func(c *gin.Context) {
 		handler.ReferenceMedia(c.Writer, c.Request, c.Param("id"))
 	})
-	api.GET("/files/:id", func(c *gin.Context) {
+	api.GET("/files/:id", middleware.OptionalAuth, func(c *gin.Context) {
 		handler.FileInfo(c.Writer, c.Request, c.Param("id"))
 	})
-	api.GET("/files/:id/content", func(c *gin.Context) {
+	api.GET("/files/:id/content", middleware.OptionalAuth, func(c *gin.Context) {
 		handler.FileContent(c.Writer, c.Request, c.Param("id"))
 	})
 	v1 := api.Group("/v1", middleware.UserAuth)
@@ -42,6 +37,9 @@ func New() *gin.Engine {
 	v1.POST("/responses", gin.WrapF(handler.AIResponses))
 	v1.POST("/files", gin.WrapF(handler.UploadFile))
 	v1.POST("/media/references", gin.WrapF(handler.UploadReferenceMedia))
+	v1.GET("/files/:id/access-url", func(c *gin.Context) {
+		handler.FileAccessURL(c.Writer, c.Request, c.Param("id"))
+	})
 	v1.DELETE("/files/:id", func(c *gin.Context) {
 		handler.DeleteFile(c.Writer, c.Request, c.Param("id"))
 	})

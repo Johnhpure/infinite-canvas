@@ -5,6 +5,18 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 # 待测试
 
+## Claude360 APIKEY 登录与本机 NewAPI 转发
+
+- 首页 `/` 需要确认未登录时自动进入 `/login`，已登录时自动进入 `/canvas`。
+- 用户登录页需要确认只展示 Claude360 APIKEY 输入框，不再展示注册、用户名密码、Linux.do 或 OIDC 登录入口。
+- 使用 Claude360/NewAPI 创建的有效 APIKEY 需要确认可以登录；无效 APIKEY 需要确认提示失败且不会创建可用会话。
+- 登录后发起 `gpt-image-2` 图片生成和 Seedance 2.0 视频/媒体相关请求时，需要确认浏览器只请求 infinite-canvas `/api/v1/*`，由后端转发到 VPS 本机 Claude360/NewAPI。
+- Docker 部署需要确认 `.env` 中 `CLAUDE360_API_BASE_URL=http://host.docker.internal:3000` 能从 infinite-canvas 容器访问宿主机 NewAPI；如果两个服务放在同一个 compose network，则改成 `http://new-api:3000` 后复测。
+- 管理员需要确认 `/admin` 使用管理员账号密码登录，后台子路由未登录时跳回 `/admin?redirect=...`。
+- 右上角需要确认已移除版本更新提示和 GitHub 仓库链接。
+- 使用两个不同 Claude360 APIKEY 分别登录后，需要确认画布、历史、素材、工作流和服务端文件互相隔离；直接访问其他用户的 `/api/files/{id}` 或 `/api/files/{id}/content` 应不可见，页面展示服务端图片应改用登录态换取的短期签名链接。
+- 参考图上传后需要确认返回的是带 `expires` 和 `signature` 的完整访问地址；去掉签名访问 `/api/media/references/{id}` 应返回 404，带签名的地址仍可被上游模型服务拉取。
+
 ## 纯生图分支与 PR #43 合并
 
 - 后台模型渠道和配置弹窗本地渠道需要确认新增 OpenAI/Gemini 协议选择；Gemini 渠道需要确认模型列表拉取成功。

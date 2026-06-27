@@ -29,12 +29,29 @@ export type AuthPayload = {
     password: string;
 };
 
+export type Claude360APIKeyLoginPayload = {
+    apiKey: string;
+};
+
+export type Claude360APIKeySession = AuthSession & {
+    baseUrl: string;
+    models: string[];
+};
+
 export async function login(payload: AuthPayload) {
     return apiPost<AuthSession>("/api/auth/login", payload);
 }
 
+export async function adminLogin(payload: AuthPayload) {
+    return apiPost<AuthSession>("/api/admin/login", payload);
+}
+
 export async function register(payload: AuthPayload) {
     return apiPost<AuthSession>("/api/auth/register", payload);
+}
+
+export async function loginWithClaude360APIKey(payload: Claude360APIKeyLoginPayload) {
+    return apiPost<Claude360APIKeySession>("/api/auth/claude360-key-login", payload);
 }
 
 export async function fetchCurrentUser(token?: string) {

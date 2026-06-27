@@ -35,19 +35,22 @@ export default function AdminLayout({ children }: { children: ReactNode }) {
     const site = useSiteInfo();
     const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
     const isMobile = !screens.md;
+    const isAdminLoginPage = pathname === "/admin";
     const activeKey = adminMenus.find((item) => pathname.startsWith(item.key))?.key || "";
     const pageTitle = adminMenus.find((item) => pathname.startsWith(item.key))?.label || "管理后台";
 
     useEffect(() => {
-        if (!isReady) return;
+        if (!isReady || isAdminLoginPage) return;
         if (!token) {
-            router.replace("/login?redirect=/admin");
+            router.replace(`/admin?redirect=${encodeURIComponent(pathname)}`);
             return;
         }
         if (user?.role !== "admin") {
             router.replace("/");
         }
-    }, [isReady, router, token, user?.role]);
+    }, [isAdminLoginPage, isReady, pathname, router, token, user?.role]);
+
+    if (isAdminLoginPage) return <>{children}</>;
 
     if (!isReady || !token || user?.role !== "admin") {
         return (

@@ -16,10 +16,12 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/basketikun/infinite-canvas/config"
 	"github.com/basketikun/infinite-canvas/model"
 	"github.com/basketikun/infinite-canvas/repository"
 	"github.com/google/uuid"
@@ -30,6 +32,7 @@ import (
 type UploadedStorageObject struct {
 	ID         string `json:"id"`
 	URL        string `json:"url"`
+	URLExpires int64  `json:"urlExpires,omitempty"`
 	StorageKey string `json:"storageKey"`
 	Bytes      int64  `json:"bytes"`
 	MimeType   string `json:"mimeType"`
@@ -108,6 +111,13 @@ type StorageCapacityResult struct {
 
 const defaultStorageCapacityLimitBytes int64 = 9 * 1024 * 1024 * 1024
 
+const (
+	AccessResourceFile      = "file"
+	AccessResourceReference = "reference"
+	StorageObjectAccessTTL  = 6 * time.Hour
+	ReferenceMediaAccessTTL = 7 * 24 * time.Hour
+)
+
 var (
 	storageCapacityCron *cron.Cron
 	storageCapacityOnce sync.Once
@@ -174,6 +184,62 @@ func PublicStorageConfig() (model.PublicStorageSetting, error) {
 
 func StorageObjectInfo(id string) (model.StorageObject, error) {
 	return repository.GetStorageObject(id)
+}
+
+func CanAccessStorageObject(ctx context.Context, object model.StorageObject) bool {
+	user, ok := UserFromContext(ctx)
+	if !ok || user.ID == "" {
+		return false
+	}
+	if user.Role == model.UserRoleAdmin {
+		return true
+	}
+	return object.CreatedBy != "" && object.CreatedBy == user.ID
+}
+
+func SignAccessToken(resource string, id string, expires int64) string {
+	payload := accessTokenPayload(resource, id, expires)
+	return hex.EncodeToString(hmacSHA256([]byte(strings.TrimSpace(config.Cfg.JWTSecret)), []byte(payload)))
+}
+
+func VerifyAccessToken(resource string, id string, expires int64, signature string) bool {
+	if resource == "" || id == "" || expires <= time.Now().Unix() || strings.TrimSpace(signature) == "" {
+		return false
+	}
+	expected := SignAccessToken(resource, id, expires)
+	return hmac.Equal([]byte(expected), []byte(strings.TrimSpace(signature)))
+}
+
+func VerifyAccessTokenFromQuery(resource string, id string, query url.Values) bool {
+	expires, err := strconv.ParseInt(query.Get("expires"), 10, 64)
+	if err != nil {
+		return false
+	}
+	return VerifyAccessToken(resource, id, expires, query.Get("signature"))
+}
+
+func SignedAccessPath(resource string, id string, basePath string, ttl time.Duration) (string, int64) {
+	expires := time.Now().Add(ttl).Unix()
+	values := url.Values{}
+	values.Set("expires", strconv.FormatInt(expires, 10))
+	values.Set("signature", SignAccessToken(resource, id, expires))
+	return basePath + "?" + values.Encode(), expires
+}
+
+func StorageObjectAccessURL(ctx context.Context, id string) (UploadedStorageObject, error) {
+	object, err := repository.GetStorageObject(id)
+	if err != nil {
+		return UploadedStorageObject{}, err
+	}
+	if !CanAccessStorageObject(ctx, object) {
+		return UploadedStorageObject{}, safeMessageError{message: "无权访问该对象"}
+	}
+	signedURL, expires := SignedAccessPath(AccessResourceFile, id, "/api/files/"+url.PathEscape(id)+"/content", StorageObjectAccessTTL)
+	return UploadedStorageObject{ID: id, URL: signedURL, URLExpires: expires, StorageKey: "server:" + id, Bytes: object.Bytes, MimeType: object.MimeType}, nil
+}
+
+func accessTokenPayload(resource string, id string, expires int64) string {
+	return resource + ":" + id + ":" + strconv.FormatInt(expires, 10)
 }
 
 func CurrentUserConfig(ctx context.Context) (UserConfigPayload, error) {
@@ -439,12 +505,18 @@ func DraftCreativeWorkflow(ctx context.Context, request WorkflowAgentDraftReques
 	if err != nil {
 		return WorkflowAgentDraftResponse{}, err
 	}
-	channel, err := workflowDraftChannel(request, modelName)
+	channel, isClaude360Channel, err := Claude360ModelChannelForUser(user.ID)
 	if err != nil {
 		return WorkflowAgentDraftResponse{}, err
 	}
+	if !isClaude360Channel {
+		channel, err = workflowDraftChannel(request, modelName)
+		if err != nil {
+			return WorkflowAgentDraftResponse{}, err
+		}
+	}
 	credits, _ := ModelCost(modelName)
-	chargedCredits := request.ChannelMode != "local"
+	chargedCredits := request.ChannelMode != "local" && !isClaude360Channel
 	if chargedCredits {
 		if err := ConsumeUserCredits(user.ID, modelName, credits, "/workflows/agent-draft", channel); err != nil {
 			return WorkflowAgentDraftResponse{}, err
@@ -859,11 +931,8 @@ func UploadStorageObjectWithProvider(ctx context.Context, filename string, conte
 	if _, err := repository.SaveStorageObject(object); err != nil {
 		return UploadedStorageObject{}, err
 	}
-	url := "/api/files/" + objectID + "/content"
-	if publicURL != "" {
-		url = publicURL
-	}
-	return UploadedStorageObject{ID: objectID, URL: url, StorageKey: "server:" + objectID, Bytes: int64(len(data)), MimeType: contentType}, nil
+	signedURL, expires := SignedAccessPath(AccessResourceFile, objectID, "/api/files/"+url.PathEscape(objectID)+"/content", StorageObjectAccessTTL)
+	return UploadedStorageObject{ID: objectID, URL: signedURL, URLExpires: expires, StorageKey: "server:" + objectID, Bytes: int64(len(data)), MimeType: contentType}, nil
 }
 
 func DeleteStorageObject(ctx context.Context, id string, providerInput *StorageObjectProviderInput) error {

@@ -94,3 +94,14 @@ func TestNormalizeSettingsPublishesEnabledChannelModelsAndRepairsDefaults(t *tes
 		t.Fatalf("default image model = %q, want seedream", channel.DefaultImageModel)
 	}
 }
+
+func TestNormalizeSettingsDisablesCustomChannelsByDefault(t *testing.T) {
+	settings := normalizeSettings(model.Settings{})
+	allowCustom := settings.Public.ModelChannel.AllowCustomChannel
+	if allowCustom == nil {
+		t.Fatal("allow custom channel is nil")
+	}
+	if *allowCustom {
+		t.Fatal("allow custom channel = true, want false for Claude360 platform mode")
+	}
+}

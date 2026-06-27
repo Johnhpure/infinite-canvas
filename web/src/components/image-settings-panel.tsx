@@ -4,6 +4,7 @@ import { useState, type ReactNode } from "react";
 import { ConfigProvider } from "antd";
 
 import { type CanvasTheme } from "@/lib/canvas-theme";
+import { IMAGE_RESOLUTION_OPTIONS, IMAGE_SIZE_PRESETS, describeImageSizeValue, parseImageSize, resolveImageSizePreset, resolveImageSizeValue, type ImageResolutionKey } from "@/lib/image-size-presets";
 import type { AiConfig } from "@/stores/use-config-store";
 
 const qualityOptions = [
@@ -12,6 +13,8 @@ const qualityOptions = [
     { value: "medium", label: "中" },
     { value: "low", label: "低" },
 ];
+
+const MAX_IMAGE_LONG_EDGE = 3840;
 
 const formatOptions = [
     { value: "png", label: "PNG" },
@@ -22,21 +25,6 @@ const formatOptions = [
 const moderationOptions = [
     { value: "auto", label: "自动" },
     { value: "low", label: "低" },
-];
-
-const aspectOptions = [
-    { value: "1:1", label: "1:1", width: 1024, height: 1024, icon: "square" },
-    { value: "3:2", label: "3:2", width: 1536, height: 1024, icon: "landscape" },
-    { value: "2:3", label: "2:3", width: 1024, height: 1536, icon: "portrait" },
-    { value: "4:3", label: "4:3", width: 1344, height: 1024, icon: "landscape" },
-    { value: "3:4", label: "3:4", width: 1024, height: 1344, icon: "portrait" },
-    { value: "9:16", label: "9:16", width: 1024, height: 1792, icon: "portrait" },
-    { value: "1:1-2k", label: "1:1(2k)", size: "2048x2048", width: 2048, height: 2048, icon: "square" },
-    { value: "16:9-2k", label: "16:9(2k)", size: "2048x1152", width: 2048, height: 1152, icon: "landscape" },
-    { value: "9:16-2k", label: "9:16(2k)", size: "1152x2048", width: 1152, height: 2048, icon: "portrait" },
-    { value: "16:9-4k", label: "16:9(4k)", size: "3840x2160", width: 3840, height: 2160, icon: "landscape" },
-    { value: "9:16-4k", label: "9:16(4k)", size: "2160x3840", width: 2160, height: 3840, icon: "portrait" },
-    { value: "auto", label: "auto", width: 0, height: 0, icon: "auto" },
 ];
 
 type ImageSettingsPanelProps = {
@@ -50,12 +38,11 @@ type ImageSettingsPanelProps = {
     collapsible?: boolean;
 };
 
-type ImageSettingSectionKey = "quality" | "size" | "aspect" | "count" | "retry" | "format" | "compression" | "moderation" | "seed";
+type ImageSettingSectionKey = "quality" | "size" | "count" | "retry" | "format" | "compression" | "moderation" | "seed";
 
 const defaultCollapsedSettings: Record<ImageSettingSectionKey, boolean> = {
     quality: false,
-    size: true,
-    aspect: true,
+    size: false,
     count: true,
     retry: true,
     format: true,
@@ -66,21 +53,31 @@ const defaultCollapsedSettings: Record<ImageSettingSectionKey, boolean> = {
 
 export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = true, className = "w-[320px] space-y-4 rounded-2xl px-1 py-0.5", maxCount = 15, quickCount = 10, collapsible = false }: ImageSettingsPanelProps) {
     const [collapsedSettings, setCollapsedSettings] = useState(defaultCollapsedSettings);
+    const [customSizeOpen, setCustomSizeOpen] = useState(false);
+    const resolvedSize = resolveImageSizePreset(config.size || "") || { presetId: IMAGE_SIZE_PRESETS[0].id, resolution: "1K" as ImageResolutionKey, size: IMAGE_SIZE_PRESETS[0].sizes["1K"] };
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
     const retryAttempts = Math.max(0, Math.min(5, Math.floor(Math.abs(Number(config.retryAttempts)) || 0)));
-    const activeSize = config.size || "auto";
+    const activeSize = config.size || resolvedSize.size;
     const outputFormat = config.outputFormat || "png";
     const outputCompression = Math.max(0, Math.min(100, Math.floor(Number(config.outputCompression) || 100)));
     const moderation = config.moderation || "auto";
-    const selectedAspect = aspectOptions.find((item) => (item.size || item.value) === activeSize || item.value === activeSize);
-    const dimensions = readSizeDimensions(activeSize, selectedAspect || aspectOptions[0]);
-    const selectAspect = (value: string) => {
-        const option = aspectOptions.find((item) => item.value === value);
-        onConfigChange("size", option?.size || option?.value || "auto");
+    const isCustomSize = customSizeOpen || !resolveImageSizePreset(activeSize);
+    const dimensions = readSizeDimensions(activeSize, parseImageSize(resolvedSize.size) || { width: 1024, height: 1024 });
+    const selectPreset = (presetId: string) => {
+        const nextSize = resolveImageSizeValue(presetId, resolvedSize.resolution);
+        if (!nextSize) return;
+        setCustomSizeOpen(false);
+        onConfigChange("size", nextSize);
+    };
+    const selectResolution = (resolution: ImageResolutionKey) => {
+        const nextSize = resolveImageSizeValue(resolvedSize.presetId, resolution);
+        if (!nextSize) return;
+        setCustomSizeOpen(false);
+        onConfigChange("size", nextSize);
     };
     const updateDimension = (key: "width" | "height", value: number | null) => {
-        const next = Math.max(1, Math.floor(value || dimensions[key] || 1024));
+        const next = Math.max(1, Math.min(MAX_IMAGE_LONG_EDGE, Math.floor(value || dimensions[key] || 1024)));
         onConfigChange("size", `${key === "width" ? next : dimensions.width}x${key === "height" ? next : dimensions.height}`);
     };
     const renderSection = (key: ImageSettingSectionKey, title: string, summary: string, children: ReactNode) => {
@@ -117,6 +114,56 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
             <div className={className} style={{ color: theme.node.text }} onMouseDown={(event) => event.stopPropagation()}>
                 {showTitle ? <div className="text-lg font-semibold">图像设置</div> : null}
                 {renderSection(
+                    "size",
+                    "尺寸",
+                    imageSizeLabel(activeSize),
+                    <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+                            {IMAGE_SIZE_PRESETS.map((item) => (
+                                <SizePresetCard key={item.id} preset={item} selected={!isCustomSize && resolvedSize.presetId === item.id} theme={theme} onClick={() => selectPreset(item.id)} />
+                            ))}
+                            <button
+                                type="button"
+                                className="min-h-[88px] cursor-pointer rounded-2xl border p-2.5 text-left transition hover:opacity-85"
+                                style={{ borderColor: isCustomSize ? theme.node.text : theme.node.stroke, background: isCustomSize ? theme.node.fill : "transparent", color: theme.node.text }}
+                                onMouseDown={(event) => event.stopPropagation()}
+                                onClick={() => setCustomSizeOpen(true)}
+                            >
+                                <div className="mb-2 flex h-8 items-center justify-center rounded-xl border border-dashed" style={{ borderColor: theme.node.stroke }}>
+                                    <span className="text-xs" style={{ color: theme.node.muted }}>
+                                        W×H
+                                    </span>
+                                </div>
+                                <div className="text-sm font-medium">自定义</div>
+                                <div className="text-xs" style={{ color: theme.node.muted }}>
+                                    手动尺寸
+                                </div>
+                            </button>
+                        </div>
+                        <div className="space-y-2">
+                            <SettingTitle color={theme.node.muted}>分辨率</SettingTitle>
+                            <div className="grid grid-cols-3 gap-2.5">
+                                {IMAGE_RESOLUTION_OPTIONS.map((item) => (
+                                    <OptionPill key={item.value} selected={!isCustomSize && resolvedSize.resolution === item.value} theme={theme} onClick={() => selectResolution(item.value)}>
+                                        {item.label}
+                                    </OptionPill>
+                                ))}
+                            </div>
+                        </div>
+                        {isCustomSize ? (
+                            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
+                                <DimensionInput prefix="W" value={dimensions.width} theme={theme} onChange={(value) => updateDimension("width", value)} />
+                                <span className="text-lg opacity-45">×</span>
+                                <DimensionInput prefix="H" value={dimensions.height} theme={theme} onChange={(value) => updateDimension("height", value)} />
+                            </div>
+                        ) : (
+                            <div className="text-xs" style={{ color: theme.node.muted }}>
+                                当前输出 {dimensions.width} × {dimensions.height} px
+                            </div>
+                        )}
+                    </div>,
+                )}
+                {renderSection(
                     "quality",
                     "质量",
                     imageQualityLabel(quality),
@@ -125,36 +172,6 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                             <OptionPill key={item.value} selected={quality === item.value} theme={theme} onClick={() => onConfigChange("quality", item.value)}>
                                 {item.label}
                             </OptionPill>
-                        ))}
-                    </div>,
-                )}
-                {renderSection(
-                    "size",
-                    "尺寸",
-                    activeSize === "auto" ? "auto" : `${dimensions.width || 0}x${dimensions.height || 0}`,
-                    <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2.5">
-                        <DimensionInput prefix="W" value={dimensions.width} disabled={activeSize === "auto"} theme={theme} onChange={(value) => updateDimension("width", value)} />
-                        <span className="text-lg opacity-45">↔</span>
-                        <DimensionInput prefix="H" value={dimensions.height} disabled={activeSize === "auto"} theme={theme} onChange={(value) => updateDimension("height", value)} />
-                    </div>,
-                )}
-                {renderSection(
-                    "aspect",
-                    "宽高比",
-                    selectedAspect?.label || activeSize,
-                    <div className="grid grid-cols-4 gap-2.5">
-                        {aspectOptions.map((item) => (
-                            <button
-                                key={item.value}
-                                type="button"
-                                className="flex h-[72px] cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border bg-transparent text-sm transition hover:opacity-80"
-                                style={{ borderColor: selectedAspect?.value === item.value ? theme.node.text : theme.node.stroke, background: "transparent", color: theme.node.text }}
-                                onMouseDown={(event) => event.stopPropagation()}
-                                onClick={() => selectAspect(item.value)}
-                            >
-                                <AspectIcon type={item.icon} width={item.width} height={item.height} color={theme.node.text} />
-                                <span>{item.label}</span>
-                            </button>
                         ))}
                     </div>,
                 )}
@@ -175,43 +192,35 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                     const modelLower = config.model?.toLowerCase().replace(/[\s_]+/g, "-") || "";
                     const isAgnesModel = modelLower.startsWith("agnes-image") || modelLower.startsWith("agens-image");
                     return isAgnesModel;
-                })() ? renderSection(
-                    "seed",
-                    "随机种子 (Seed)",
-                    config.seed ? String(config.seed) : "自适应随机",
-                    <div className="flex h-9 overflow-hidden rounded-xl border text-sm transition-all focus-within:border-current" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}>
-                        <input
-                            type="text"
-                            placeholder="留空使用自适应分发算法"
-                            className="min-w-0 flex-1 bg-transparent px-3 outline-none"
-                            style={{ color: theme.node.text }}
-                            value={config.seed ?? ""}
-                            onChange={(event) => {
-                                const val = event.target.value;
-                                if (val === "" || /^-?\d*$/.test(val)) {
-                                    onConfigChange("seed", val);
-                                }
-                            }}
-                            onMouseDown={(event) => event.stopPropagation()}
-                        />
-                        {config.seed ? (
-                            <button
-                                type="button"
-                                className="grid w-9 place-items-center cursor-pointer opacity-60 hover:opacity-100"
-                                style={{ color: theme.node.text }}
-                                onClick={() => onConfigChange("seed", "")}
-                            >
-                                ✕
-                            </button>
-                        ) : null}
-                    </div>,
-                ) : null}
-                {renderSection(
-                    "retry",
-                    "失败重试",
-                    `${retryAttempts} 次`,
-                    <RetryInput value={retryAttempts} theme={theme} onChange={(value) => onConfigChange("retryAttempts", String(value))} />,
-                )}
+                })()
+                    ? renderSection(
+                          "seed",
+                          "随机种子 (Seed)",
+                          config.seed ? String(config.seed) : "自适应随机",
+                          <div className="flex h-9 overflow-hidden rounded-xl border text-sm transition-all focus-within:border-current" style={{ borderColor: theme.node.stroke, background: theme.node.fill }}>
+                              <input
+                                  type="text"
+                                  placeholder="留空使用自适应分发算法"
+                                  className="min-w-0 flex-1 bg-transparent px-3 outline-none"
+                                  style={{ color: theme.node.text }}
+                                  value={config.seed ?? ""}
+                                  onChange={(event) => {
+                                      const val = event.target.value;
+                                      if (val === "" || /^-?\d*$/.test(val)) {
+                                          onConfigChange("seed", val);
+                                      }
+                                  }}
+                                  onMouseDown={(event) => event.stopPropagation()}
+                              />
+                              {config.seed ? (
+                                  <button type="button" className="grid w-9 place-items-center cursor-pointer opacity-60 hover:opacity-100" style={{ color: theme.node.text }} onClick={() => onConfigChange("seed", "")}>
+                                      ✕
+                                  </button>
+                              ) : null}
+                          </div>,
+                      )
+                    : null}
+                {renderSection("retry", "失败重试", `${retryAttempts} 次`, <RetryInput value={retryAttempts} theme={theme} onChange={(value) => onConfigChange("retryAttempts", String(value))} />)}
                 {renderSection(
                     "format",
                     "格式",
@@ -265,11 +274,38 @@ export function imageQualityLabel(value: string) {
 }
 
 export function imageSizeLabel(size: string) {
-    return aspectOptions.find((item) => (item.size || item.value) === size || item.value === size)?.label || size;
+    if (!size || size === "auto") return "自动";
+    return describeImageSizeValue(size);
 }
 
 export function imageFormatLabel(value: string) {
     return ({ png: "PNG", jpeg: "JPEG", webp: "WebP" } as Record<string, string>)[value] || value;
+}
+
+function SizePresetCard({ preset, selected, theme, onClick }: { preset: (typeof IMAGE_SIZE_PRESETS)[number]; selected: boolean; theme: CanvasTheme; onClick: () => void }) {
+    const [widthRatio, heightRatio] = preset.ratio.split(":").map(Number);
+    const isWide = widthRatio >= heightRatio;
+    const longSide = 34;
+    const shortSide = Math.max(12, Math.round(longSide / (Math.max(widthRatio, heightRatio) / Math.min(widthRatio, heightRatio))));
+    const iconWidth = isWide ? longSide : shortSide;
+    const iconHeight = isWide ? shortSide : longSide;
+    return (
+        <button
+            type="button"
+            className="min-h-[88px] cursor-pointer rounded-2xl border p-2.5 text-left transition hover:-translate-y-0.5 hover:opacity-90"
+            style={{ borderColor: selected ? theme.node.text : theme.node.stroke, background: selected ? theme.node.fill : "transparent", color: theme.node.text }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={onClick}
+        >
+            <div className="mb-2 flex h-8 items-center justify-center rounded-xl" style={{ background: theme.toolbar.panel }}>
+                <span className="block rounded-md border-2" style={{ width: iconWidth, height: iconHeight, borderColor: selected ? theme.node.text : theme.node.stroke, background: selected ? theme.node.activeStroke : "transparent" }} />
+            </div>
+            <div className="text-sm font-semibold leading-none">{preset.ratio}</div>
+            <div className="mt-1 truncate text-xs" style={{ color: theme.node.muted }}>
+                {preset.name}
+            </div>
+        </button>
+    );
 }
 
 function OptionPill({ selected, theme, onClick, children }: { selected: boolean; theme: CanvasTheme; onClick: () => void; children: ReactNode }) {
@@ -311,16 +347,16 @@ function CollapsibleSettingGroup({ title, summary, collapsed, theme, children, o
     );
 }
 
-function DimensionInput({ prefix, value, disabled, theme, onChange }: { prefix: string; value: number; disabled: boolean; theme: CanvasTheme; onChange: (value: number | null) => void }) {
+function DimensionInput({ prefix, value, theme, onChange }: { prefix: string; value: number; theme: CanvasTheme; onChange: (value: number | null) => void }) {
     return (
-        <label className="flex h-9 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text, opacity: disabled ? 0.55 : 1 }}>
+        <label className="flex h-9 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text }}>
             <span className="grid w-9 place-items-center" style={{ color: theme.node.muted }}>
                 {prefix}
             </span>
             <input
                 type="number"
                 min={1}
-                disabled={disabled}
+                max={MAX_IMAGE_LONG_EDGE}
                 className="min-w-0 flex-1 bg-transparent px-2 outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 value={value || ""}
                 onChange={(event) => onChange(Number(event.target.value) || null)}
@@ -398,18 +434,6 @@ function RangeInput({ value, disabled, theme, onChange }: { value: number; disab
     );
 }
 
-function AspectIcon({ type, width, height, color }: { type: string; width: number; height: number; color: string }) {
-    if (type === "auto") return null;
-    const ratio = width / Math.max(1, height);
-    const boxWidth = ratio >= 1 ? 24 : Math.max(10, 24 * ratio);
-    const boxHeight = ratio >= 1 ? Math.max(10, 24 / ratio) : 24;
-    return (
-        <span className="grid h-7 w-9 place-items-center">
-            <span className="border-2" style={{ width: boxWidth, height: boxHeight, borderColor: color }} />
-        </span>
-    );
-}
-
 function SettingTitle({ children, color }: { children: string; color: string }) {
     return (
         <div className="text-xs font-medium" style={{ color }}>
@@ -419,9 +443,8 @@ function SettingTitle({ children, color }: { children: string; color: string }) 
 }
 
 function readSizeDimensions(size: string, fallback: { width: number; height: number }) {
-    const match = size?.match(/^(\d+)x(\d+)$/);
-    return {
-        width: match ? Number(match[1]) : fallback.width,
-        height: match ? Number(match[2]) : fallback.height,
-    };
+    const dimensions = parseImageSize(size);
+    if (dimensions) return dimensions;
+    const ratioSize = IMAGE_SIZE_PRESETS.find((item) => item.ratio === size)?.sizes["1K"];
+    return parseImageSize(ratioSize || "") || fallback;
 }

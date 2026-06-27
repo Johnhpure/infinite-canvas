@@ -11,4 +11,8 @@ services:
       - ./data:/app/data
     ports:
       - "13000:13000"
+    # Linux Docker 中如果 CLAUDE360_API_BASE_URL 指向宿主机 127.0.0.1:3000，
+    # 容器内需通过 host.docker.internal 访问宿主机。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped

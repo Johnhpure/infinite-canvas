@@ -34,12 +34,7 @@ import { ModelPicker } from "@/components/model-picker";
 import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
 import { AssetPickerModal, type InsertAssetPayload } from "@/app/(user)/canvas/components/asset-picker-modal";
 import { canvasThemes } from "@/lib/canvas-theme";
-import {
-    CreativeWorkflowWorkspace,
-    type WorkflowExternalTaskFailure,
-    type WorkflowExternalTaskStart,
-    type WorkflowExternalTaskSuccess,
-} from "@/components/workflows/creative-workflow-workspace";
+import { CreativeWorkflowWorkspace, type WorkflowExternalTaskFailure, type WorkflowExternalTaskStart, type WorkflowExternalTaskSuccess } from "@/components/workflows/creative-workflow-workspace";
 import { useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
@@ -106,7 +101,10 @@ type GenerationLog = {
     workflowInputs?: Record<string, unknown>;
 };
 
-type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "size" | "count" | "apiMode" | "outputFormat" | "outputCompression" | "moderation" | "timeout" | "retryAttempts" | "streamImages" | "streamPartialImages" | "responseFormatB64Json" | "codexCli" | "seed"> & { channelId?: string; channelName?: string };
+type GenerationLogConfig = Pick<
+    AiConfig,
+    "model" | "imageModel" | "quality" | "size" | "count" | "apiMode" | "outputFormat" | "outputCompression" | "moderation" | "timeout" | "retryAttempts" | "streamImages" | "streamPartialImages" | "responseFormatB64Json" | "codexCli" | "seed"
+> & { channelId?: string; channelName?: string };
 type RequestSnapshot = { text: string; requestConfig: AiConfig; displayConfig: GenerationLogConfig; references: ReferenceImage[] };
 type GenerationCategory = { id: string; name: string; createdAt: number };
 type ResultViewMode = "all" | "category";
@@ -239,7 +237,7 @@ export default function ImagePage() {
         const dx = event.clientX - drag.startX;
         const dy = event.clientY - drag.startY;
         if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
-        
+
         // 直接更新 DOM 样式，免去顶层 React State 的庞大整页重绘 Layout 卡顿！
         const nextPos = clampWorkflowButtonPosition({ x: drag.originX + dx, y: drag.originY + dy });
         if (workflowButtonRef.current) {
@@ -397,18 +395,18 @@ export default function ImagePage() {
 
                 // 立即存储图片
                 const stored = await uploadImage(image.dataUrl);
-                const durableImage = { 
-                    ...image, 
-                    storageKey: stored.storageKey, 
-                    width: stored.width, 
-                    height: stored.height, 
-                    bytes: stored.bytes, 
-                    mimeType: stored.mimeType 
+                const durableImage = {
+                    ...image,
+                    storageKey: stored.storageKey,
+                    width: stored.width,
+                    height: stored.height,
+                    bytes: stored.bytes,
+                    mimeType: stored.mimeType,
                 };
-                
+
                 // 更新结果状态
                 setResults((value) => updateResult(value, id, { image: durableImage }));
-                
+
                 // 立即保存单张成功日志
                 await saveLog(
                     buildLog({
@@ -430,7 +428,7 @@ export default function ImagePage() {
             } catch (err) {
                 const errMsg = errorMessage(err);
                 const errDetail = errorDetail(err);
-                
+
                 // 立即保存单张失败日志
                 await saveLog(
                     buildLog({
@@ -533,7 +531,10 @@ export default function ImagePage() {
                 setReferences((value) => [...value, reference]);
             } else {
                 const stored = await uploadImage(payload.dataUrl);
-                setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, source: payload.source === "library" ? "library" : "upload", temporary: payload.source !== "library" }]);
+                setReferences((value) => [
+                    ...value,
+                    { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey, source: payload.source === "library" ? "library" : "upload", temporary: payload.source !== "library" },
+                ]);
             }
         } else {
             message.warning("该素材不能作为生图参考图");
@@ -617,7 +618,7 @@ export default function ImagePage() {
             const remote = config.imageHistory as { logs?: GenerationLog[]; categories?: GenerationCategory[] } | undefined;
             const remoteLogs = Array.isArray(remote?.logs) ? remote.logs : [];
             const remoteCategories = Array.isArray(remote?.categories) ? remote.categories : [];
-            
+
             const localLogs = await readStoredLogs();
             const localCategories = await readStoredCategories();
             const localHasData = localLogs.length > 0 || localCategories.length > 0;
@@ -1017,7 +1018,7 @@ export default function ImagePage() {
                 className="fixed z-50 inline-flex touch-none select-none items-center gap-2 rounded-full border border-sky-300/70 bg-white/90 px-4 py-3 text-sm font-semibold text-stone-950 shadow-[0_18px_50px_rgba(14,165,233,0.28),0_8px_18px_rgba(0,0,0,0.14)] ring-1 ring-white/70 backdrop-blur-xl transition hover:-translate-y-0.5 hover:border-sky-300 hover:bg-white hover:shadow-[0_22px_64px_rgba(14,165,233,0.36),0_10px_22px_rgba(0,0,0,0.18)] dark:border-sky-400/40 dark:bg-stone-900/88 dark:text-stone-100 dark:ring-white/10 dark:hover:bg-stone-900"
                 style={{
                     left: (typeof window === "undefined" ? defaultWorkflowButtonPosition() : clampWorkflowButtonPosition(workflowButtonPosition.x || workflowButtonPosition.y ? workflowButtonPosition : defaultWorkflowButtonPosition())).x,
-                    top: (typeof window === "undefined" ? defaultWorkflowButtonPosition() : clampWorkflowButtonPosition(workflowButtonPosition.x || workflowButtonPosition.y ? workflowButtonPosition : defaultWorkflowButtonPosition())).y
+                    top: (typeof window === "undefined" ? defaultWorkflowButtonPosition() : clampWorkflowButtonPosition(workflowButtonPosition.x || workflowButtonPosition.y ? workflowButtonPosition : defaultWorkflowButtonPosition())).y,
                 }}
                 onPointerDown={handleWorkflowButtonPointerDown}
                 onPointerMove={handleWorkflowButtonPointerMove}
@@ -1035,7 +1036,7 @@ export default function ImagePage() {
                 <WandSparkles className="size-4 text-sky-500 dark:text-sky-300" />
                 工作流
             </button>
-            <Drawer title="创作工作流" placement="right" size="min(1120px, 92vw)" open={workflowDrawerOpen}  onClose={() => setWorkflowDrawerOpen(false)} styles={{ body: { padding: 0 } }} destroyOnHidden={false}>
+            <Drawer title="创作工作流" placement="right" size="min(1120px, 92vw)" open={workflowDrawerOpen} onClose={() => setWorkflowDrawerOpen(false)} styles={{ body: { padding: 0 } }} destroyOnHidden={false}>
                 <CreativeWorkflowWorkspace
                     embedded
                     hideTaskList
@@ -1072,22 +1073,6 @@ export default function ImagePage() {
         </div>
     );
 }
-
-const quickSizeOptions = [
-    { value: "auto", label: "auto" },
-    { value: "1:1", label: "1:1" },
-    { value: "3:2", label: "3:2" },
-    { value: "2:3", label: "2:3" },
-    { value: "4:3", label: "4:3" },
-    { value: "3:4", label: "3:4" },
-    { value: "9:16", label: "9:16" },
-    { value: "2048x2048", label: "1:1 2k" },
-    { value: "2048x1152", label: "16:9 2k" },
-    { value: "1152x2048", label: "9:16 2k" },
-    { value: "4096x4096", label: "1:1 4k" },
-    { value: "3840x2160", label: "16:9 4k" },
-    { value: "2160x3840", label: "9:16 4k" },
-];
 
 const quickQualityOptions = [
     { value: "auto", label: "自动" },
@@ -1157,6 +1142,7 @@ function WorkbenchPanel({
     uploadingCount: number;
 }) {
     const [bottomSettingsCollapsed, setBottomSettingsCollapsed] = useState(true);
+    const theme = canvasThemes[useThemeStore((state) => state.theme)];
 
     if (layout === "bottom") {
         return (
@@ -1180,7 +1166,7 @@ function WorkbenchPanel({
                                 <Button title="我的素材" icon={<FolderPlus className="size-4" />} onClick={onOpenAssetPicker} />
                                 <Button
                                     title="参数配置"
-                                    className={`lg:hidden ${!bottomSettingsCollapsed ? "!bg-sky-500/10 !text-sky-500 !border-sky-500/30" : ""}`}
+                                    className={`${!bottomSettingsCollapsed ? "!bg-sky-500/10 !text-sky-500 !border-sky-500/30" : ""}`}
                                     icon={<SlidersHorizontal className="size-4" />}
                                     onClick={() => setBottomSettingsCollapsed(!bottomSettingsCollapsed)}
                                 />
@@ -1191,7 +1177,7 @@ function WorkbenchPanel({
                             </div>
                         </div>
                         <div className={`gap-2 lg:grid-cols-[minmax(0,1fr)_132px] lg:items-end ${bottomSettingsCollapsed ? "hidden lg:grid" : "grid"}`}>
-                            <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-[minmax(122px,1.25fr)_74px_minmax(80px,.8fr)_minmax(72px,.7fr)_minmax(72px,.7fr)_64px_minmax(70px,.7fr)_60px_60px]">
+                            <div className="grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-[minmax(122px,1.25fr)_74px_minmax(130px,1fr)_minmax(80px,.8fr)_minmax(72px,.7fr)_64px_minmax(70px,.7fr)_60px_60px]">
                                 <label className="grid gap-1 text-[11px] leading-none text-stone-500 dark:text-stone-400">
                                     模型
                                     <ModelPicker
@@ -1222,7 +1208,7 @@ function WorkbenchPanel({
                                         />
                                     </div>
                                 </label>
-                                <QuickSelect label="尺寸" value={config.size || "auto"} options={quickSizeOptions} onChange={(value) => updateConfig("size", value)} />
+                                <QuickAction label="尺寸" value={imageSizeLabel(config.size || "")} onClick={() => setBottomSettingsCollapsed((value) => !value)} />
                                 <QuickSelect label="质量" value={config.quality || "auto"} options={quickQualityOptions} onChange={(value) => updateConfig("quality", value)} />
                                 <QuickSelect label="格式" value={config.outputFormat || "png"} options={quickFormatOptions} onChange={(value) => updateConfig("outputFormat", value as AiConfig["outputFormat"])} />
                                 <QuickNumber label="压缩" value={config.outputCompression || "100"} min={0} max={100} disabled={(config.outputFormat || "png") === "png"} onChange={(value) => updateConfig("outputCompression", value)} />
@@ -1237,6 +1223,17 @@ function WorkbenchPanel({
                                 </Button>
                             </div>
                         </div>
+                        {!bottomSettingsCollapsed ? (
+                            <div className="rounded-2xl border border-stone-200 bg-background/95 p-3 shadow-sm dark:border-stone-800 dark:bg-stone-950/95">
+                                <div className="mb-3 flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-stone-900 dark:text-stone-100">图片尺寸与质量</div>
+                                    <Button size="small" onClick={() => setBottomSettingsCollapsed(true)}>
+                                        收起
+                                    </Button>
+                                </div>
+                                <ImageSettingsPanel config={config} onConfigChange={(key, value) => updateConfig(key, value)} theme={theme} showTitle={false} className="space-y-3" maxCount={10} collapsible />
+                            </div>
+                        ) : null}
                         {references.length || uploadingCount > 0 ? <ReferenceStrip className="mt-3" references={references} compact onRemoveReference={onRemoveReference} uploadingCount={uploadingCount} /> : null}
                     </div>
                 </div>
@@ -1382,6 +1379,21 @@ function ReferenceQuickActions({ references, onUploadReferences }: { references:
             {references.length ? <span className="min-w-6 text-xs text-stone-500">{references.length} 张</span> : null}
             <Button size="small" type="text" icon={<Upload className="size-3.5" />} onClick={onUploadReferences} />
         </div>
+    );
+}
+
+function QuickAction({ label, value, onClick }: { label: string; value: string; onClick: () => void }) {
+    return (
+        <label className="grid gap-1 text-[11px] leading-none text-stone-500 dark:text-stone-400">
+            {label}
+            <button
+                type="button"
+                className="h-10 min-w-0 truncate rounded-xl border border-stone-200 bg-background px-2 text-left text-xs text-stone-900 outline-none transition hover:bg-stone-50 dark:border-stone-800 dark:text-stone-100 dark:hover:bg-stone-900"
+                onClick={onClick}
+            >
+                {value || "未设置"}
+            </button>
+        </label>
     );
 }
 
@@ -1690,7 +1702,17 @@ function GenerationSettings({ config, model, updateConfig, openConfigDialog }: {
         <div className="space-y-3">
             <SettingSubsection title="模型" summary={model || "未选择模型"} collapsed={modelCollapsed} onToggle={() => setModelCollapsed((value) => !value)}>
                 <div className="space-y-2">
-                    <ModelPicker config={config} value={model} channelId={config.imageChannelId} onChange={(value, channelId) => { updateConfig("imageModel", value); if (channelId) updateConfig("imageChannelId", channelId); }} fullWidth onMissingConfig={() => openConfigDialog(false)} />
+                    <ModelPicker
+                        config={config}
+                        value={model}
+                        channelId={config.imageChannelId}
+                        onChange={(value, channelId) => {
+                            updateConfig("imageModel", value);
+                            if (channelId) updateConfig("imageChannelId", channelId);
+                        }}
+                        fullWidth
+                        onMissingConfig={() => openConfigDialog(false)}
+                    />
                     <div className="flex items-center justify-between gap-3 pt-1">
                         <div className="text-xs opacity-75">接口模式</div>
                         <Segmented

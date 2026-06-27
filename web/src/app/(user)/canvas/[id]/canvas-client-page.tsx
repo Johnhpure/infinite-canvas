@@ -12,6 +12,7 @@ import { collectImageStorageKeys, deleteStoredImages, resolveImageUrl, uploadIma
 import { nanoid } from "nanoid";
 import { formatBytes, getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { canvasThemes, type CanvasBackgroundMode } from "@/lib/canvas-theme";
+import { withBasePath } from "@/lib/base-path";
 import { UserStatusActions } from "@/components/layout/user-status-actions";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
@@ -1464,7 +1465,7 @@ function InfiniteCanvasPage() {
         } else {
                 const hideLoading = message.loading("正在下载图片...", 0);
             try {
-                const response = await fetch(url.startsWith("http") ? `/api/proxy-image?url=${encodeURIComponent(url)}` : url);
+                const response = await fetch(url.startsWith("http") ? withBasePath(`/api/proxy-image?url=${encodeURIComponent(url)}`) : withBasePath(url));
                 const blob = await response.blob();
                 saveAs(blob, filename);
             } catch (error) {

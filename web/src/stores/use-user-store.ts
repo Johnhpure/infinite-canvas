@@ -3,7 +3,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import { AUTH_TOKEN_KEY, fetchCurrentUser, login, register, type AuthPayload, type AuthUser } from "@/services/api/auth";
+import { AUTH_TOKEN_KEY, fetchCurrentUser, loginWithClaude360APIKey, type AuthUser } from "@/services/api/auth";
 
 type UserStore = {
     token: string;
@@ -13,8 +13,7 @@ type UserStore = {
     setSession: (token: string, user: AuthUser) => void;
     clearSession: () => void;
     hydrateUser: () => Promise<void>;
-    login: (payload: AuthPayload) => Promise<AuthUser>;
-    register: (payload: AuthPayload) => Promise<AuthUser>;
+    loginWithClaude360APIKey: (apiKey: string) => Promise<{ user: AuthUser; baseUrl: string; models: string[] }>;
 };
 
 export const useUserStore = create<UserStore>()(
@@ -44,23 +43,12 @@ export const useUserStore = create<UserStore>()(
                     set({ token: "", user: null, isReady: true, isLoading: false });
                 }
             },
-            login: async (payload) => {
+            loginWithClaude360APIKey: async (apiKey) => {
                 set({ isLoading: true });
                 try {
-                    const session = await login(payload);
+                    const session = await loginWithClaude360APIKey({ apiKey });
                     set({ token: session.token, user: session.user, isReady: true, isLoading: false });
-                    return session.user;
-                } catch (error) {
-                    set({ isLoading: false });
-                    throw error;
-                }
-            },
-            register: async (payload) => {
-                set({ isLoading: true });
-                try {
-                    const session = await register(payload);
-                    set({ token: session.token, user: session.user, isReady: true, isLoading: false });
-                    return session.user;
+                    return { user: session.user, baseUrl: session.baseUrl, models: session.models || [] };
                 } catch (error) {
                     set({ isLoading: false });
                     throw error;

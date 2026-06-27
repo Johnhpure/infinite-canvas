@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/basketikun/infinite-canvas/config"
+	"github.com/basketikun/infinite-canvas/service"
 	"github.com/google/uuid"
 )
 
@@ -79,9 +79,10 @@ func UploadReferenceMedia(w http.ResponseWriter, r *http.Request) {
 		Fail(w, referenceMediaSizeMessage(mimeType))
 		return
 	}
+	signedURL, _ := service.SignedAccessPath(service.AccessResourceReference, id, "/api/media/references/"+id, service.ReferenceMediaAccessTTL)
 	OK(w, referenceMediaUploadResult{
 		ID:       id,
-		URL:      fmt.Sprintf("%s/api/media/references/%s", publicBaseURL, id),
+		URL:      publicBaseURL + signedURL,
 		MimeType: mimeType,
 		Bytes:    bytes,
 	})
@@ -89,6 +90,10 @@ func UploadReferenceMedia(w http.ResponseWriter, r *http.Request) {
 
 func ReferenceMedia(w http.ResponseWriter, r *http.Request, id string) {
 	if id == "" || id != filepath.Base(id) || strings.Contains(id, "..") {
+		http.NotFound(w, r)
+		return
+	}
+	if !service.VerifyAccessTokenFromQuery(service.AccessResourceReference, id, r.URL.Query()) {
 		http.NotFound(w, r)
 		return
 	}

@@ -1,5 +1,7 @@
 "use client";
 
+import { withBasePath } from "@/lib/base-path";
+
 export type ImageCropRect = {
     x: number;
     y: number;
@@ -165,7 +167,7 @@ function loadImage(dataUrl: string) {
         const image = new Image();
         let src = dataUrl;
         if (dataUrl.startsWith("http")) {
-            src = `/api/proxy-image?url=${encodeURIComponent(dataUrl)}`;
+            src = withBasePath(`/api/proxy-image?url=${encodeURIComponent(dataUrl)}`);
             image.crossOrigin = "anonymous";
         }
         image.onload = () => resolve(image);

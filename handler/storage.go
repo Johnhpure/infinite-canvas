@@ -245,6 +245,15 @@ func DeleteFile(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func FileContent(w http.ResponseWriter, r *http.Request, id string) {
+	object, err := service.StorageObjectInfo(id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !service.CanAccessStorageObject(r.Context(), object) && !service.VerifyAccessTokenFromQuery(service.AccessResourceFile, id, r.URL.Query()) {
+		http.NotFound(w, r)
+		return
+	}
 	download, err := service.DownloadStorageObject(id)
 	if err != nil {
 		FailError(w, err)
@@ -255,17 +264,46 @@ func FileContent(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	w.Header().Set("Content-Type", download.Object.MimeType)
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
 	_, _ = w.Write(download.Data)
 }
 
 func FileInfo(w http.ResponseWriter, r *http.Request, id string) {
 	object, err := service.StorageObjectInfo(id)
 	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	userAccess := service.CanAccessStorageObject(r.Context(), object)
+	signedAccess := service.VerifyAccessTokenFromQuery(service.AccessResourceFile, id, r.URL.Query())
+	if !userAccess && !signedAccess {
+		http.NotFound(w, r)
+		return
+	}
+	if !userAccess {
+		object = signedStorageObjectInfo(object)
+	}
+	OK(w, object)
+}
+
+func signedStorageObjectInfo(object model.StorageObject) model.StorageObject {
+	object.ProviderID = ""
+	object.Bucket = ""
+	object.ObjectKey = ""
+	object.PublicURL = ""
+	object.SHA256 = ""
+	object.CreatedBy = ""
+	object.DeletedAt = ""
+	return object
+}
+
+func FileAccessURL(w http.ResponseWriter, r *http.Request, id string) {
+	result, err := service.StorageObjectAccessURL(r.Context(), id)
+	if err != nil {
 		FailError(w, err)
 		return
 	}
-	OK(w, object)
+	OK(w, result)
 }
 
 func AdminMeasureStorageProvider(w http.ResponseWriter, r *http.Request) {

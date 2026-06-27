@@ -8,6 +8,7 @@ import axios from "axios";
 import { saveAs } from "file-saver";
 
 import { useCopyText } from "@/hooks/use-copy-text";
+import { withBasePath } from "@/lib/base-path";
 import { cn } from "@/lib/utils";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { fetchAssetLibrary, type AssetLibraryItem } from "@/services/api/assets";
@@ -90,7 +91,7 @@ export default function AssetLibraryPage() {
         } else {
             const hideLoading = message.loading("正在下载媒体文件...", 0);
             try {
-                const response = await fetch(url.startsWith("http") ? `/api/proxy-image?url=${encodeURIComponent(url)}` : url);
+                const response = await fetch(url.startsWith("http") ? withBasePath(`/api/proxy-image?url=${encodeURIComponent(url)}`) : withBasePath(url));
                 const blob = await response.blob();
                 saveAs(blob, filename);
             } catch (error) {

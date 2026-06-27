@@ -1,6 +1,8 @@
 import axios from "axios";
 
 import { dataUrlToFile } from "@/lib/image-utils";
+import { withBasePath } from "@/lib/base-path";
+import { IMAGE_SIZE_PRESETS } from "@/lib/image-size-presets";
 import { imageToBlob, imageToDataUrl, resolveImageUrl } from "@/services/image-storage";
 import { buildApiUrl, channelIdForActiveModel, localChannelForActiveModel, type AiConfig } from "@/stores/use-config-store";
 import { useUserStore } from "@/stores/use-user-store";
@@ -19,10 +21,7 @@ export type ResponseToolCall = {
     thoughtSignature?: string;
 };
 
-export type ResponseInputMessage =
-    | ChatCompletionMessage
-    | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string }
-    | { role: "tool"; tool_call_id: string; content: string };
+export type ResponseInputMessage = ChatCompletionMessage | { type: "function_call"; call_id: string; name: string; arguments: string; thoughtSignature?: string } | { role: "tool"; tool_call_id: string; content: string };
 
 export type ResponseFunctionTool = {
     type: "function";
@@ -42,10 +41,7 @@ export type ToolResponseResult = {
 type ToolChoice = "auto" | "required" | { type: "function"; name: string };
 type ResponseMessageContent = ChatCompletionMessage["content"] | string;
 type ResponseInputContent = { type: "input_text"; text: string } | { type: "input_image"; image_url: string };
-type ResponseInputItem =
-    | { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] }
-    | { type: "function_call"; call_id: string; name: string; arguments: string }
-    | { type: "function_call_output"; call_id: string; output: string };
+type ResponseInputItem = { role: "system" | "user" | "assistant"; content: string | ResponseInputContent[] } | { type: "function_call"; call_id: string; name: string; arguments: string } | { type: "function_call_output"; call_id: string; output: string };
 type ResponseApiToolDefinition = {
     type: "function";
     name: string;
@@ -53,11 +49,7 @@ type ResponseApiToolDefinition = {
     parameters: Record<string, unknown>;
     strict?: boolean;
 };
-type ResponseApiOutputItem = Record<string, unknown> &
-    (
-        | { type?: "message"; content?: Array<{ type?: string; text?: string }> }
-        | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string }
-    );
+type ResponseApiOutputItem = Record<string, unknown> & ({ type?: "message"; content?: Array<{ type?: string; text?: string }> } | { type?: "function_call"; id?: string; call_id?: string; name?: string; arguments?: string });
 
 type ImageApiResponse = {
     data?: Array<Record<string, unknown>>;
@@ -140,23 +132,18 @@ const QUALITY_BASE: Record<string, number> = {
     standard: 1024,
     hd: 2048,
 };
-const QUALITY_ALIASES: Record<string, string> = {
-    "1k": "low",
-    "2k": "medium",
-    "4k": "high",
-};
 const MIME_MAP: Record<ImageRequestParams["outputFormat"], string> = {
     png: "image/png",
     jpeg: "image/jpeg",
     webp: "image/webp",
 };
 const PROMPT_REWRITE_GUARD_PREFIX = "Use the following text as the complete prompt. Do not rewrite it:";
+const MAX_GPT_IMAGE_LONG_EDGE = 3840;
 
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
     if (!value || value === "auto") return "auto";
-    const normalized = QUALITY_ALIASES[value] || value;
-    return QUALITY_BASE[normalized] ? normalized : "auto";
+    return QUALITY_BASE[value] ? value : "auto";
 }
 
 function normalizeOutputFormat(value: string): ImageRequestParams["outputFormat"] {
@@ -173,37 +160,34 @@ function normalizeBoundedInteger(value: string | number, fallback: number, min: 
     return Math.max(min, Math.min(max, number));
 }
 
-/** Map "quality + ratio" to an explicit pixel dimension like "3840x2160". Returns undefined when quality is auto. */
-function resolveSize(quality: string, ratio: string): string | undefined {
-    const basePixels = QUALITY_BASE[quality];
-    if (!basePixels || ratio === "auto" || !ratio) return undefined;
-
-    const parts = ratio.split(":");
-    if (parts.length !== 2) return undefined;
-    const w = Number(parts[0]);
-    const h = Number(parts[1]);
-    if (!w || !h) return undefined;
-
-    const targetPixels = basePixels * basePixels;
-    const isLandscape = w >= h;
-    const longRatio = isLandscape ? w / h : h / w;
-
-    const longSideRaw = Math.sqrt(targetPixels * longRatio);
-    const longSide = Math.floor(longSideRaw / 16) * 16;
-    const shortSide = Math.round(longSide / longRatio / 16) * 16;
-
-    const width = isLandscape ? longSide : shortSide;
-    const height = isLandscape ? shortSide : longSide;
-
-    return `${width}x${height}`;
+/** Map a legacy ratio value to the official 1K preset dimension. */
+function resolveRatioSize(ratio: string): string | undefined {
+    if (ratio === "auto" || !ratio) return undefined;
+    const normalizedRatio = ratio.trim();
+    return IMAGE_SIZE_PRESETS.find((item) => item.ratio === normalizedRatio)?.sizes["1K"];
 }
 
-function resolveRequestSize(quality: string | undefined, size: string) {
+function resolveRequestSize(size: string) {
     const value = size.trim();
     if (!value || value === "auto") return undefined;
-    if (/^\d+x\d+$/.test(value)) return value;
-    // 用户只选了宽高比时,即使 quality=auto 也要折算成具体像素尺寸,避免 "1:1" 这种非法值发到 API。
-    return resolveSize(quality && QUALITY_BASE[quality] ? quality : "low", value);
+    if (/^\d+x\d+$/.test(value)) return normalizeImageRequestSize(value);
+    // 兼容历史配置中的纯宽高比，统一按 1K 输出折算，避免 quality 再影响分辨率。
+    return normalizeImageRequestSize(resolveRatioSize(value));
+}
+
+function normalizeImageRequestSize(size?: string) {
+    if (!size) return undefined;
+    const match = /^(\d+)x(\d+)$/.exec(size);
+    if (!match) return undefined;
+    const width = Number(match[1]);
+    const height = Number(match[2]);
+    if (!width || !height) return undefined;
+    const longEdge = Math.max(width, height);
+    if (longEdge <= MAX_GPT_IMAGE_LONG_EDGE) return `${width}x${height}`;
+    const scale = MAX_GPT_IMAGE_LONG_EDGE / longEdge;
+    const normalizedWidth = Math.max(1, Math.floor((width * scale) / 16) * 16);
+    const normalizedHeight = Math.max(1, Math.floor((height * scale) / 16) * 16);
+    return `${normalizedWidth}x${normalizedHeight}`;
 }
 
 function createImageRequestParams(config: AiConfig): ImageRequestParams {
@@ -212,7 +196,7 @@ function createImageRequestParams(config: AiConfig): ImageRequestParams {
     return {
         n: normalizeBoundedInteger(config.count, 1, 1, 15),
         quality,
-        size: resolveRequestSize(quality, config.size),
+        size: resolveRequestSize(config.size),
         outputFormat,
         outputCompression: normalizeBoundedInteger(config.outputCompression, 100, 0, 100),
         moderation: normalizeModeration(config.moderation),
@@ -375,11 +359,7 @@ function parseResponsesTextPayload(text: string, mime: string): GeneratedImage[]
         }
     });
     const directSources = extractQuotedValuesByKey(text, ["result", "b64_json", "image_url", "url", "partial_image_b64"]);
-    const images = [
-        ...output.flatMap((item) => collectResponsesImageSources(item)),
-        ...directSources,
-        ...(partialImages.length ? [partialImages[partialImages.length - 1]] : []),
-    ]
+    const images = [...output.flatMap((item) => collectResponsesImageSources(item)), ...directSources, ...(partialImages.length ? [partialImages[partialImages.length - 1]] : [])]
         .filter(Boolean)
         .map((source) => ({ id: nanoid(), dataUrl: normalizeImageSource(source, mime) }));
     if (images.length) return Array.from(new Map(images.map((image) => [image.dataUrl, image])).values());
@@ -482,12 +462,12 @@ function readBalancedJson(text: string, start: number) {
                 escaped = false;
             } else if (char === "\\") {
                 escaped = true;
-            } else if (char === "\"") {
+            } else if (char === '"') {
                 inString = false;
             }
             continue;
         }
-        if (char === "\"") {
+        if (char === '"') {
             inString = true;
         } else if (char === "{") {
             depth += 1;
@@ -664,7 +644,7 @@ function withPromptGuard(config: AiConfig, prompt: string) {
 }
 
 function aiApiUrl(config: AiConfig, path: string) {
-    if (config.channelMode === "remote") return `/api/v1${path}`;
+    if (config.channelMode === "remote") return withBasePath(`/api/v1${path}`);
     const channel = localChannelForActiveModel(config);
     return buildApiUrl(channel?.baseUrl || config.baseUrl, path);
 }
@@ -868,12 +848,7 @@ async function requestStreamingResponse(config: AiConfig, body: Record<string, u
 }
 
 function toGeminiBody(config: AiConfig, messages: ResponseInputMessage[], extra?: Record<string, unknown>) {
-    const systemText = [
-        (config.systemPrompts.text || config.systemPrompt).trim(),
-        ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : [])),
-    ]
-        .filter(Boolean)
-        .join("\n\n");
+    const systemText = [(config.systemPrompts.text || config.systemPrompt).trim(), ...messages.flatMap((message) => (!("type" in message) && message.role === "system" ? [geminiTextContent(message.content)] : []))].filter(Boolean).join("\n\n");
     const contents = toGeminiContents(messages.filter((message) => ("type" in message ? true : message.role !== "system")));
     return {
         contents,
@@ -1061,7 +1036,7 @@ async function writeLocalAICallLog(config: AiConfig, endpoint: string, startedAt
     const token = useUserStore.getState().token;
     if (!token) return;
     const channel = localChannelForActiveModel(config);
-    await fetch("/api/v1/ai-logs", {
+    await fetch(withBasePath("/api/v1/ai-logs"), {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -1100,7 +1075,7 @@ function redactLogImages(value: unknown) {
     const record = value as Record<string, unknown>;
     for (const key of Object.keys(record)) {
         const item = record[key];
-        if (typeof item === "string" && (item.startsWith("data:image/") || item.length > 2048 && looksLikeBase64(item))) {
+        if (typeof item === "string" && (item.startsWith("data:image/") || (item.length > 2048 && looksLikeBase64(item)))) {
             record[key] = `[redacted image/string len=${item.length}]`;
             continue;
         }
@@ -1158,13 +1133,15 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
             params.timeoutSeconds,
             () =>
                 requestWithTransientRetry(() =>
-                    withTimeout(params.timeoutSeconds, (signal) =>
-                        fetch(aiApiUrl(config, "/images/generations"), {
-                            method: "POST",
-                            headers: aiHeaders(config, "application/json"),
-                            body: JSON.stringify(body),
-                            signal,
-                        }),
+                    withTimeout(
+                        params.timeoutSeconds,
+                        (signal) =>
+                            fetch(aiApiUrl(config, "/images/generations"), {
+                                method: "POST",
+                                headers: aiHeaders(config, "application/json"),
+                                body: JSON.stringify(body),
+                                signal,
+                            }),
                         options.signal,
                     ),
                 ),
@@ -1203,13 +1180,15 @@ async function requestImageGenerationSingle(config: AiConfig & { seedIndex?: num
         params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
-                    withTimeout(params.timeoutSeconds, (signal) =>
-                    fetch(aiApiUrl(config, "/images/generations"), {
-                        method: "POST",
-                        headers: aiHeaders(config, "application/json"),
-                        body: JSON.stringify(body),
-                        signal,
-                    }),
+                withTimeout(
+                    params.timeoutSeconds,
+                    (signal) =>
+                        fetch(aiApiUrl(config, "/images/generations"), {
+                            method: "POST",
+                            headers: aiHeaders(config, "application/json"),
+                            body: JSON.stringify(body),
+                            signal,
+                        }),
                     options.signal,
                 ),
             ),
@@ -1252,13 +1231,15 @@ async function requestImageEditSingle(config: AiConfig, prompt: string, referenc
         params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
-                    withTimeout(params.timeoutSeconds, (signal) =>
-                    fetch(aiApiUrl(config, "/images/edits"), {
-                        method: "POST",
-                        headers: aiHeaders(config),
-                        body: formData,
-                        signal,
-                    }),
+                withTimeout(
+                    params.timeoutSeconds,
+                    (signal) =>
+                        fetch(aiApiUrl(config, "/images/edits"), {
+                            method: "POST",
+                            headers: aiHeaders(config),
+                            body: formData,
+                            signal,
+                        }),
                     options.signal,
                 ),
             ),
@@ -1322,13 +1303,15 @@ async function requestResponsesSingle(config: AiConfig, prompt: string, inputIma
         params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
-                    withTimeout(params.timeoutSeconds, (signal) =>
-                    fetch(aiApiUrl(config, "/responses"), {
-                        method: "POST",
-                        headers: aiHeaders(config, "application/json"),
-                        body: JSON.stringify(body),
-                        signal,
-                    }),
+                withTimeout(
+                    params.timeoutSeconds,
+                    (signal) =>
+                        fetch(aiApiUrl(config, "/responses"), {
+                            method: "POST",
+                            headers: aiHeaders(config, "application/json"),
+                            body: JSON.stringify(body),
+                            signal,
+                        }),
                     options.signal,
                 ),
             ),
@@ -1589,7 +1572,7 @@ function generateDiscreteSeed(seedIndex?: number, seedCount?: number, customSeed
         randVal = array[0];
     } else {
         // 降级使用微秒级时空杂凑
-        const timeSalt = Date.now() * 1000 + Math.floor(performance.now() * 1000) % 1000;
+        const timeSalt = Date.now() * 1000 + (Math.floor(performance.now() * 1000) % 1000);
         const mathRand = Math.random() * 1000000;
         randVal = timeSalt ^ mathRand;
     }
@@ -1632,7 +1615,7 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
                 if (publicUrl) return publicUrl;
             }
             return imageToDataUrl(ref);
-        })
+        }),
     );
 
     const seedValue = config.seed ? generateDiscreteSeed(config.seedIndex, config.seedCount, config.seed) : undefined;
@@ -1653,13 +1636,15 @@ async function requestAgnesImageEdit(config: AiConfig & { seedIndex?: number; se
         params.timeoutSeconds,
         () =>
             requestWithTransientRetry(() =>
-                withTimeout(params.timeoutSeconds, (signal) =>
-                    fetch(aiApiUrl(config, "/images/generations"), {
-                        method: "POST",
-                        headers: aiHeaders(config, "application/json"),
-                        body: JSON.stringify(body),
-                        signal,
-                    }),
+                withTimeout(
+                    params.timeoutSeconds,
+                    (signal) =>
+                        fetch(aiApiUrl(config, "/images/generations"), {
+                            method: "POST",
+                            headers: aiHeaders(config, "application/json"),
+                            body: JSON.stringify(body),
+                            signal,
+                        }),
                     options.signal,
                 ),
             ),
