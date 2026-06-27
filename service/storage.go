@@ -588,25 +588,7 @@ func workflowDraftModel(modelName string) (string, error) {
 	if modelName != "" {
 		return modelName, nil
 	}
-	settings, err := repository.GetSettings()
-	if err != nil {
-		return "", err
-	}
-	normalized := normalizeSettings(settings)
-	if strings.TrimSpace(normalized.Public.ModelChannel.DefaultTextModel) != "" {
-		return strings.TrimSpace(normalized.Public.ModelChannel.DefaultTextModel), nil
-	}
-	if strings.TrimSpace(normalized.Public.ModelChannel.DefaultModel) != "" {
-		return strings.TrimSpace(normalized.Public.ModelChannel.DefaultModel), nil
-	}
-	for _, channel := range normalized.Private.Channels {
-		for _, model := range channel.Models {
-			if strings.TrimSpace(model) != "" {
-				return strings.TrimSpace(model), nil
-			}
-		}
-	}
-	return "", safeMessageError{message: "请先配置文本模型"}
+	return Claude360WorkflowTextModel, nil
 }
 
 func workflowDraftChannel(request WorkflowAgentDraftRequest, modelName string) (model.ModelChannel, error) {

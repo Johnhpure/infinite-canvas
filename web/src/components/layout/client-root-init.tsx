@@ -5,7 +5,7 @@ import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { App } from "antd";
 
-import { useConfigStore, type AiConfig } from "@/stores/use-config-store";
+import { normalizeSiteName, useConfigStore, type AiConfig } from "@/stores/use-config-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useUserStore } from "@/stores/use-user-store";
 import { fetchUserConfig } from "@/services/api/user-config";
@@ -36,7 +36,7 @@ export function ClientRootInit({ children }: { children: ReactNode }) {
     useEffect(() => {
         if (!publicSettings?.site) return;
         const { name, faviconUrl } = publicSettings.site;
-        if (name) document.title = name;
+        document.title = normalizeSiteName(name);
         if (faviconUrl) {
             let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
             if (!link) {

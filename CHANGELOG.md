@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.3.6 - 2026-06-27
+
++ [调整] 登录默认进入生图工作台，顶部画布入口文案调整为 `Claude360 Copilot`。
++ [调整] 精简用户区入口，移除算力点余额展示、会员中心、我的订单和生图排行榜，仅保留退出登录。
++ [新增] Claude360 APIKEY 登录增加 image 分组生图权限探测，无权限时提示用户更换有调用权限的 APIKEY。
++ [优化] 生图代理对 Claude360 图片请求自动携带 `New-Api-Group: image`，工作流提示词生成默认使用 `gpt-5.5` 文本模型。
+
 ## v0.3.5 - 2026-06-23
 
 + [修复] 优化大尺寸图片处理：`/images/edits` 参考图改为直接使用 Blob/FormData 上传，避免 4K 图片在请求前重复转 base64 导致 `Maximum call stack size exceeded`。

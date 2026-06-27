@@ -59,6 +59,7 @@ export type AiConfig = {
 export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 export const OPENAI_BASE_URL = "https://api.openai.com";
 export const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+export const DEFAULT_SITE_NAME = "Claude360 Copilot";
 
 export const defaultConfig: AiConfig = {
     channelMode: "remote",
@@ -108,7 +109,7 @@ type ConfigStore = {
     clearPromptContinue: () => void;
 };
 
-function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null) {
+function resolveEffectiveConfig(config: AiConfig, modelChannel: AdminPublicSettings["modelChannel"] | null): AiConfig {
     const channelMode = "remote";
     const publicChannels = mergePublicChannels(modelChannel?.channels || [], config.publicChannels || []);
     const models = Array.from(new Set([...(modelChannel?.availableModels || []), ...(config.models || []), ...publicChannels.flatMap((channel) => channel.models)]));
@@ -261,7 +262,7 @@ function normalizeImageSize(size: string) {
     return IMAGE_SIZE_PRESETS.find((item) => item.ratio === value)?.sizes["1K"] || defaultConfig.size;
 }
 
-export function useEffectiveConfig() {
+export function useEffectiveConfig(): AiConfig {
     const config = useConfigStore((state) => state.config);
     const modelChannel = useConfigStore((state) => state.publicSettings?.modelChannel || null);
     return useMemo(() => resolveEffectiveConfig(config, modelChannel), [config, modelChannel]);
@@ -270,9 +271,9 @@ export function useEffectiveConfig() {
 export function useSiteInfo() {
     const site = useConfigStore((state) => state.publicSettings?.site);
     return {
-        name: site?.name || "无限画布",
+        name: normalizeSiteName(site?.name),
         subtitle: site?.subtitle || "",
-        description: site?.description || "一个无限画布创作工具",
+        description: site?.description || "Claude360 生图创作工具",
         logoUrl: site?.logoUrl || "",
         faviconUrl: site?.faviconUrl || "",
         copyright: site?.copyright || "",
@@ -322,4 +323,10 @@ export function localChannelForActiveModel(config: AiConfig) {
     const channels = normalizeLocalChannels(config);
     const preferredId = channelIdForActiveModel(config);
     return channels.find((channel) => channel.id === preferredId && channel.models.includes(config.model)) || channels.find((channel) => channel.models.includes(config.model)) || channels.find((channel) => channel.id === preferredId) || channels[0];
+}
+
+export function normalizeSiteName(name?: string) {
+    const value = name?.trim();
+    if (!value || value === "无限画布") return DEFAULT_SITE_NAME;
+    return value;
 }

@@ -12,7 +12,7 @@ export default function IndexPage() {
 
     useEffect(() => {
         if (!isReady) return;
-        router.replace(user ? "/canvas" : "/login");
+        router.replace(user ? "/image" : "/login");
     }, [isReady, router, user]);
 
     return <main className="h-full bg-background" />;

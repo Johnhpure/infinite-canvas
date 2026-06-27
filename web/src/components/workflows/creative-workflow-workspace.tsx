@@ -184,6 +184,8 @@ const CATEGORY_STORE_KEY = "infinite-canvas:image_generation_categories";
 const workflowStore = localforage.createInstance({ name: "infinite-canvas", storeName: "creative_workflows" });
 const imageLogStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_logs" });
 const categoryStore = localforage.createInstance({ name: "infinite-canvas", storeName: "image_generation_categories" });
+const WORKFLOW_TEXT_MODEL = "gpt-5.5";
+const CLAUDE360_CHANNEL_ID = "claude360-platform";
 
 const variableTypeOptions: Array<{ value: WorkflowVariableType; label: string }> = [
     { value: "text", label: "短文本" },
@@ -263,8 +265,8 @@ export function CreativeWorkflowWorkspace({
     const renderedPrompt = useMemo(() => (runningWorkflow ? renderWorkflowPrompt(runningWorkflow, inputValues) : ""), [inputValues, runningWorkflow]);
     const runningTaskCount = workflowTasks.filter((task) => task.status === "running").length;
     const activeSeriesDrafts = seriesDrafts.filter((item) => item.status !== "success");
-    const agentModel = agentTextModel || effectiveConfig.textModel || effectiveConfig.model;
-    const agentChannelId = agentTextChannelId || effectiveConfig.textChannelId;
+    const agentModel = agentTextModel || workflowTextModel(effectiveConfig);
+    const agentChannelId = agentTextChannelId || workflowTextChannelId(effectiveConfig);
     const agentModelInfo = useMemo(() => describeModelSelection(effectiveConfig, agentModel, agentChannelId), [agentChannelId, agentModel, effectiveConfig]);
 
     useEffect(() => {
@@ -273,9 +275,9 @@ export function CreativeWorkflowWorkspace({
     }, [isUserReady, token]);
 
     useEffect(() => {
-        if (!agentTextModel && (effectiveConfig.textModel || effectiveConfig.model)) setAgentTextModel(effectiveConfig.textModel || effectiveConfig.model);
-        if (!agentTextChannelId && effectiveConfig.textChannelId) setAgentTextChannelId(effectiveConfig.textChannelId);
-    }, [agentTextChannelId, agentTextModel, effectiveConfig.model, effectiveConfig.textChannelId, effectiveConfig.textModel]);
+        if (!agentTextModel) setAgentTextModel(workflowTextModel(effectiveConfig));
+        if (!agentTextChannelId) setAgentTextChannelId(workflowTextChannelId(effectiveConfig));
+    }, [agentTextChannelId, agentTextModel, effectiveConfig]);
 
     useEffect(() => {
         if (!runningTaskCount) return;
@@ -540,8 +542,8 @@ export function CreativeWorkflowWorkspace({
         }
         setAgentLoading(true);
         try {
-            const textModel = agentTextModel || effectiveConfig.textModel || effectiveConfig.model;
-            const textChannelId = agentTextChannelId || effectiveConfig.textChannelId;
+            const textModel = agentTextModel || workflowTextModel(effectiveConfig);
+            const textChannelId = agentTextChannelId || workflowTextChannelId(effectiveConfig);
             const textConfig = { ...effectiveConfig, model: textModel, textModel, textChannelId, activeChannelId: textChannelId };
             if (!isAiConfigReady(textConfig, textModel)) {
                 openConfigDialog(true);
@@ -587,8 +589,8 @@ export function CreativeWorkflowWorkspace({
 
     const generateSeriesPromptDrafts = async () => {
         if (!runningWorkflow) return;
-        const promptModel = runningWorkflow.seriesConfig.promptModel || effectiveConfig.textModel || effectiveConfig.model;
-        const promptChannelId = runningWorkflow.seriesConfig.promptChannelId || effectiveConfig.textChannelId;
+        const promptModel = runningWorkflow.seriesConfig.promptModel || workflowTextModel(effectiveConfig);
+        const promptChannelId = runningWorkflow.seriesConfig.promptChannelId || workflowTextChannelId(effectiveConfig);
         const textConfig = { ...effectiveConfig, model: promptModel, textModel: promptModel, textChannelId: promptChannelId, activeChannelId: promptChannelId, systemPrompt: effectiveConfig.systemPrompts.workflow || effectiveConfig.systemPrompt };
         if (!isAiConfigReady(textConfig, promptModel)) {
             message.warning("请先完成文本模型配置");
@@ -1674,6 +1676,15 @@ function InfoPill({ label, value }: { label: string; value: string }) {
     );
 }
 
+function workflowTextModel(config: Pick<AiConfig, "models" | "textModel" | "model">) {
+    return config.models.includes(WORKFLOW_TEXT_MODEL) || !config.models.length ? WORKFLOW_TEXT_MODEL : config.textModel || config.model || WORKFLOW_TEXT_MODEL;
+}
+
+function workflowTextChannelId(config: Pick<AiConfig, "publicChannels" | "textChannelId">) {
+    if (config.publicChannels.some((channel) => channel.id === CLAUDE360_CHANNEL_ID && channel.models.includes(WORKFLOW_TEXT_MODEL))) return CLAUDE360_CHANNEL_ID;
+    return config.publicChannels.find((channel) => channel.models.includes(WORKFLOW_TEXT_MODEL))?.id || config.textChannelId || "";
+}
+
 function createBlankWorkflow(config: AiConfig, mode: WorkflowMode = "single_image"): CreativeWorkflow {
     const now = Date.now();
     const series = mode === "multi_image_series";
@@ -1773,8 +1784,8 @@ function createWorkflowConfig(config: AiConfig): WorkflowGenerationConfig {
 function createWorkflowSeriesConfig(config: AiConfig): WorkflowSeriesConfig {
     return {
         targetCount: "4",
-        promptModel: config.textModel || config.model || defaultConfig.textModel,
-        promptChannelId: config.textChannelId || "",
+        promptModel: workflowTextModel(config),
+        promptChannelId: workflowTextChannelId(config),
         promptInstruction: "围绕同一主题拆分成封面图、核心信息图、场景图和总结图；每张图需要画面重点不同但视觉风格一致。",
         reviewRequired: true,
         concurrency: "3",

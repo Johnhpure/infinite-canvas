@@ -15,7 +15,7 @@ type LoginFormValues = {
 function safeRedirect(value: string | null): string {
     const cleaned = (value ?? "").replace(/[\t\n\r]/g, "");
     if (!cleaned.startsWith("/") || cleaned.startsWith("//") || cleaned.startsWith("/\\")) {
-        return "/canvas";
+        return "/image";
     }
     return cleaned;
 }
@@ -42,8 +42,8 @@ function LoginContent() {
         try {
             const session = await loginWithClaude360APIKey(values.apiKey);
             const models = session.models || [];
-            const imageModel = models.includes("gpt-image-2") ? "gpt-image-2" : models[0] || "gpt-image-2";
-            const textModel = models.includes("gpt-5.5") ? "gpt-5.5" : models.find((model) => !model.toLowerCase().includes("image")) || models[0] || "";
+            const imageModel = pickImageModel(models) || "gpt-image-2";
+            const textModel = pickTextModel(models);
             updateConfig("channelMode", "remote");
             updateConfig("models", models);
             updateConfig("publicChannels", [{ id: "claude360-platform", protocol: "openai", name: "Claude360 平台模型", baseUrl: "", models, weight: 1, timeout: 600, enabled: true, remark: "" }]);
@@ -78,7 +78,7 @@ function LoginContent() {
                         />
                     )}
                     <h1 className="text-3xl font-semibold tracking-normal text-stone-950 dark:text-stone-100">使用 Claude360 APIKEY 登录</h1>
-                    <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">请输入你在 claude360 创建的 APIKEY，即可进入媒体创作工作台。</p>
+                    <p className="mt-3 text-base leading-7 text-stone-500 dark:text-stone-400">请输入你在 claude360 创建的 APIKEY，即可进入生图工作台。</p>
                 </div>
 
                 <Form<LoginFormValues> layout="vertical" size="large" requiredMark={false} onFinish={submit}>
@@ -86,10 +86,23 @@ function LoginContent() {
                         <Input.Password prefix={<KeyOutlined />} autoComplete="off" placeholder="sk-..." />
                     </Form.Item>
                     <Button block type="primary" htmlType="submit" loading={isLoading}>
-                        登录媒体创作工作台
+                        登录生图工作台
                     </Button>
                 </Form>
             </section>
         </main>
     );
+}
+
+function pickImageModel(models: string[]) {
+    return models.find((model) => model === "gpt-image-2") || models.find(isImageModel) || "";
+}
+
+function pickTextModel(models: string[]) {
+    return models.find((model) => model === "gpt-5.5") || models.find((model) => !isImageModel(model)) || "gpt-5.5";
+}
+
+function isImageModel(model: string) {
+    const value = model.toLowerCase();
+    return ["image", "seedream", "flux", "dall", "imagen", "midjourney", "stable-diffusion", "sdxl"].some((keyword) => value.includes(keyword));
 }

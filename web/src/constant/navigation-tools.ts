@@ -3,7 +3,7 @@ import { FileText, ImagePlus, Images, Maximize2 } from "lucide-react";
 export const navigationTools = [
     {
         slug: "canvas",
-        label: "我的画布",
+        label: "Claude360 Copilot",
         icon: Maximize2,
     },
     {

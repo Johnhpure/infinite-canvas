@@ -7,13 +7,17 @@ description: 当前版本已实现但仍需人工验证的变更项
 
 ## Claude360 APIKEY 登录与本机 NewAPI 转发
 
-- 首页 `/` 需要确认未登录时自动进入 `/login`，已登录时自动进入 `/canvas`。
+- 首页 `/` 需要确认未登录时自动进入 `/login`，已登录时自动进入 `/image` 生图工作台。
 - 用户登录页需要确认只展示 Claude360 APIKEY 输入框，不再展示注册、用户名密码、Linux.do 或 OIDC 登录入口。
 - 使用 Claude360/NewAPI 创建的有效 APIKEY 需要确认可以登录；无效 APIKEY 需要确认提示失败且不会创建可用会话。
-- 登录后发起 `gpt-image-2` 图片生成和 Seedance 2.0 视频/媒体相关请求时，需要确认浏览器只请求 infinite-canvas `/api/v1/*`，由后端转发到 VPS 本机 Claude360/NewAPI。
+- 使用没有 image 分组或 `gpt-image-2` 生图调用权限的 Claude360 APIKEY 登录时，需要确认提示用户更换有调用权限的 APIKEY。
+- 登录后发起 `gpt-image-2` 图片生成时，需要确认浏览器只请求 infinite-canvas `/api/v1/*`，由后端转发到 VPS 本机 Claude360/NewAPI，且后端转发请求带 `New-Api-Group: image`。
+- 工作流 AI 创建和多图提示词生成需要确认默认文本模型为 `gpt-5.5`，并仍通过 Claude360 平台模型渠道调用。
 - Docker 部署需要确认 `.env` 中 `CLAUDE360_API_BASE_URL=http://host.docker.internal:3000` 能从 infinite-canvas 容器访问宿主机 NewAPI；如果两个服务放在同一个 compose network，则改成 `http://new-api:3000` 后复测。
 - 管理员需要确认 `/admin` 使用管理员账号密码登录，后台子路由未登录时跳回 `/admin?redirect=...`。
 - 右上角需要确认已移除版本更新提示和 GitHub 仓库链接。
+- 右上角账户区需要确认不再展示当前算力点余额，头像菜单只保留“退出登录”。
+- 顶部导航需要确认画布入口文案为 `Claude360 Copilot`。
 - 使用两个不同 Claude360 APIKEY 分别登录后，需要确认画布、历史、素材、工作流和服务端文件互相隔离；直接访问其他用户的 `/api/files/{id}` 或 `/api/files/{id}/content` 应不可见，页面展示服务端图片应改用登录态换取的短期签名链接。
 - 参考图上传后需要确认返回的是带 `expires` 和 `signature` 的完整访问地址；去掉签名访问 `/api/media/references/{id}` 应返回 404，带签名的地址仍可被上游模型服务拉取。
 
@@ -54,7 +58,6 @@ description: 当前版本已实现但仍需人工验证的变更项
 - univibe 等 `/responses` 渠道需要确认单行 SSE、`response.image_generation_call.partial_image` 和 `partial_image_b64` 能被识别为图片结果；后端 AI 日志和算力点结算不再把这类已返回图片的调用记为失败。
 - 上游返回 HTTP 图片 URL 的渠道需要确认生成卡片可以直接展示结果，不再错误包成 base64。
 - 算力点日志需要确认 AI 消费和失败返还备注显示模型与渠道信息；失败请求应出现等额消费和返还，成功请求只保留消费。
-- 所有带顶部账户区的用户页和后台页需要确认头像旁会显示当前算力点余额，余额变化后刷新用户信息可同步更新。
 - “我的素材”文本卡片需要确认长提示词默认收起，详情仍可查看全文。
 - 页面右上角需要确认已移除文档跳转按钮。
 - R2/S3 图片上传需要确认超时、连接重置或 5xx 时会按 100ms、300ms、900ms 递增延迟重试。

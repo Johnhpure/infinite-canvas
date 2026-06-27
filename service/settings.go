@@ -92,10 +92,10 @@ func normalizePublicSetting(setting model.PublicSetting) model.PublicSetting {
 
 func normalizePublicSiteSetting(setting model.PublicSiteSetting) model.PublicSiteSetting {
 	if strings.TrimSpace(setting.Name) == "" {
-		setting.Name = "无限画布"
+		setting.Name = "Claude360 Copilot"
 	}
 	if strings.TrimSpace(setting.Description) == "" {
-		setting.Description = "一个无限画布创作工具"
+		setting.Description = "Claude360 生图创作工具"
 	}
 	return setting
 }

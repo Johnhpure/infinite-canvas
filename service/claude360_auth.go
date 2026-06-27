@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +22,13 @@ type Claude360APIKeySession struct {
 	BaseURL string   `json:"baseUrl"`
 	Models  []string `json:"models"`
 }
+
+const (
+	Claude360PlatformChannelID = "claude360-platform"
+	Claude360ImageGroup        = "image"
+	Claude360ImageModel        = "gpt-image-2"
+	Claude360WorkflowTextModel = "gpt-5.5"
+)
 
 type claude360UsageResponse struct {
 	Success bool `json:"success"`
@@ -76,7 +85,7 @@ func Claude360ModelChannelForUser(userID string) (model.ModelChannel, bool, erro
 		return model.ModelChannel{}, false, nil
 	}
 	return model.ModelChannel{
-		ID:       "claude360-platform",
+		ID:       Claude360PlatformChannelID,
 		Protocol: "openai",
 		Name:     "Claude360 平台模型",
 		BaseURL:  claude360APIBaseURL(),
@@ -107,6 +116,17 @@ func claude360APIBaseURL() string {
 }
 
 func validateClaude360APIKey(baseURL string, apiKey string) ([]string, error) {
+	models, err := fetchClaude360Models(baseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := probeClaude360ImageGroupAccess(baseURL, apiKey); err != nil {
+		return nil, err
+	}
+	return ensureClaude360RequiredModels(models), nil
+}
+
+func fetchClaude360Models(baseURL string, apiKey string) ([]string, error) {
 	endpoint := buildClaude360URL(baseURL, "/models")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -115,6 +135,7 @@ func validateClaude360APIKey(baseURL string, apiKey string) ([]string, error) {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("New-Api-Group", Claude360ImageGroup)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, safeMessageError{message: "无法连接 Claude360 本机接口"}
@@ -184,6 +205,86 @@ func claude360TokenModelLimits(baseURL string, apiKey string) (map[string]bool, 
 		return nil, false
 	}
 	return payload.Data.ModelLimits, payload.Data.ModelLimitsEnabled
+}
+
+func probeClaude360ImageGroupAccess(baseURL string, apiKey string) error {
+	body := []byte(`{"model":"` + Claude360ImageModel + `","prompt":""}`)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, buildClaude360URL(baseURL, "/images/generations"), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("New-Api-Group", Claude360ImageGroup)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return safeMessageError{message: "无法验证 Claude360 image 分组权限"}
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || claude360ImageProbeDenied(string(responseBody)) {
+		return safeMessageError{message: "当前 Claude360 APIKEY 没有 image 分组的生图调用权限，请更换有调用权限的 APIKEY"}
+	}
+	if resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode == http.StatusNotFound {
+		return safeMessageError{message: "无法验证 Claude360 image 分组权限"}
+	}
+	return nil
+}
+
+func ensureClaude360RequiredModels(models []string) []string {
+	result := make([]string, 0, len(models)+2)
+	seen := map[string]bool{}
+	for _, modelName := range models {
+		modelName = strings.TrimSpace(modelName)
+		if modelName != "" && !seen[modelName] {
+			seen[modelName] = true
+			result = append(result, modelName)
+		}
+	}
+	for _, modelName := range []string{Claude360ImageModel, Claude360WorkflowTextModel} {
+		if !seen[modelName] {
+			seen[modelName] = true
+			result = append(result, modelName)
+		}
+	}
+	return result
+}
+
+func claude360ImageProbeDenied(response string) bool {
+	value := strings.ToLower(response)
+	for _, keyword := range []string{"无权访问", "分组", "group access", "access denied", "no channel", "model forbidden", "no model access", "does not exist"} {
+		if strings.Contains(value, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasClaude360ImageAccess(models []string) bool {
+	for _, modelName := range models {
+		if claude360ModelMatchesImage(modelName) {
+			return true
+		}
+	}
+	return false
+}
+
+func claude360ModelMatchesImage(modelName string) bool {
+	value := strings.ToLower(strings.TrimSpace(modelName))
+	if value == "" {
+		return false
+	}
+	if value == Claude360ImageModel {
+		return true
+	}
+	for _, keyword := range []string{"image", "seedream", "flux", "dall", "imagen", "midjourney", "stable-diffusion", "sdxl"} {
+		if strings.Contains(value, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func claude360RootURL(baseURL string) string {

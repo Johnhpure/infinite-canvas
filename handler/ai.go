@@ -105,6 +105,9 @@ func proxyAIRequest(w http.ResponseWriter, r *http.Request, path string) {
 		return
 	}
 	request.Header.Set("Authorization", "Bearer "+channel.APIKey)
+	if isClaude360Channel && isImageAIRequest(path, body) {
+		request.Header.Set("New-Api-Group", service.Claude360ImageGroup)
+	}
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}

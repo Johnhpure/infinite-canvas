@@ -26,7 +26,7 @@ const jsonEditorTheme = EditorView.theme({
 
 const emptySettings: AdminSettings = {
     public: {
-        site: { name: "无限画布", subtitle: "", description: "一个无限画布创作工具", logoUrl: "", faviconUrl: "", copyright: "" },
+        site: { name: "Claude360 Copilot", subtitle: "", description: "Claude360 生图创作工具", logoUrl: "", faviconUrl: "", copyright: "" },
         modelChannel: {
             availableModels: [],
             modelCosts: [],
@@ -466,7 +466,7 @@ export default function AdminSettingsPage() {
                                     <Row gutter={16}>
                                         <Col xs={24} md={8}>
                                             <Form.Item name={["public", "site", "name"]} label="站点名称" rules={[{ required: true, message: "请输入站点名称" }]}>
-                                                <Input placeholder="例如 无限画布" />
+                                                <Input placeholder="例如 Claude360 Copilot" />
                                             </Form.Item>
                                         </Col>
                                         <Col xs={24} md={8}>
@@ -481,7 +481,7 @@ export default function AdminSettingsPage() {
                                         </Col>
                                         <Col xs={24}>
                                             <Form.Item name={["public", "site", "description"]} label="站点描述（用于浏览器标题栏说明 / SEO）">
-                                                <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} placeholder="一个无限画布创作工具" />
+                                                <Input.TextArea autoSize={{ minRows: 2, maxRows: 4 }} placeholder="Claude360 生图创作工具" />
                                             </Form.Item>
                                         </Col>
                                         <Col xs={24} md={12}>
@@ -1308,9 +1308,9 @@ function normalizePublicSetting(setting: Partial<AdminSettings["public"]> = {}):
     return {
         ...emptySettings.public,
         site: {
-            name: setting.site?.name || "无限画布",
+            name: setting.site?.name || "Claude360 Copilot",
             subtitle: setting.site?.subtitle || "",
-            description: setting.site?.description || "一个无限画布创作工具",
+            description: setting.site?.description || "Claude360 生图创作工具",
             logoUrl: setting.site?.logoUrl || "",
             faviconUrl: setting.site?.faviconUrl || "",
             copyright: setting.site?.copyright || "",
