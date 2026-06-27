@@ -1766,7 +1766,7 @@ function createWorkflowConfig(config: AiConfig): WorkflowGenerationConfig {
         quality: config.quality || defaultConfig.quality,
         size: config.size || defaultConfig.size,
         count: config.count || "1",
-        apiMode: config.apiMode || "images",
+        apiMode: "images",
         outputFormat: config.outputFormat || "png",
         outputCompression: config.outputCompression || "100",
         moderation: config.moderation || "auto",
@@ -1817,7 +1817,7 @@ function normalizeAgentDraft(draft: Partial<CreativeWorkflow>, config: AiConfig,
         description: draft.description || "",
         mode: draft.mode === "multi_image_series" ? "multi_image_series" : "single_image",
         variables: (draft.variables || []).map((variable) => ({ ...createVariable(), ...variable, id: variable.id || nanoid() })),
-        config: { ...createWorkflowConfig(config), ...(draft.config || {}) },
+        config: { ...createWorkflowConfig(config), ...(draft.config || {}), apiMode: normalizeDraftImageApiMode(draft.config) },
         seriesConfig: { ...createWorkflowSeriesConfig(config), ...(draft.seriesConfig || {}) },
         createdAt: now,
         updatedAt: now,
@@ -1842,11 +1842,19 @@ function normalizeWorkflow(workflow: CreativeWorkflow): CreativeWorkflow {
         editable: workflow.editable !== false,
         mode: workflow.mode === "multi_image_series" ? "multi_image_series" : "single_image",
         variables: (workflow.variables || []).map(normalizeVariable),
-        config: { ...createWorkflowConfig(defaultConfig), ...(workflow.config || {}) },
+        config: { ...createWorkflowConfig(defaultConfig), ...(workflow.config || {}), apiMode: normalizeWorkflowImageApiMode(workflow.config) },
         seriesConfig: { ...createWorkflowSeriesConfig(defaultConfig), ...(workflow.seriesConfig || {}) },
         createdAt: workflow.createdAt || Date.now(),
         updatedAt: workflow.updatedAt || Date.now(),
     };
+}
+
+function normalizeDraftImageApiMode(config?: Partial<WorkflowGenerationConfig>) {
+    return config?.apiMode === "responses" ? "responses" : "images";
+}
+
+function normalizeWorkflowImageApiMode(config?: Partial<WorkflowGenerationConfig>) {
+    return config?.apiMode === "responses" ? "responses" : "images";
 }
 
 function createDefaultInputValues(workflow: CreativeWorkflow) {
@@ -1992,11 +2000,12 @@ function recordToWorkflow(record: CreativeWorkflowRecord<CreativeWorkflow>): Cre
 function resolveWorkflowRuntime(workflow: CreativeWorkflow, baseConfig: AiConfig) {
     const workflowModel = workflow.config.imageModel || workflow.config.model;
     const fallbackModel = baseConfig.imageModel || baseConfig.model;
-    if (!workflowModel) return { model: fallbackModel, apiMode: baseConfig.apiMode, channelId: baseConfig.imageChannelId };
+    const workflowApiMode = workflow.config.apiMode || "images";
+    if (!workflowModel) return { model: fallbackModel, apiMode: workflowApiMode, channelId: baseConfig.imageChannelId };
     if (baseConfig.channelMode === "remote" && workflowModel !== fallbackModel && (!baseConfig.models.length || !baseConfig.models.includes(workflowModel))) {
-        return { model: fallbackModel, apiMode: baseConfig.apiMode, channelId: baseConfig.imageChannelId };
+        return { model: fallbackModel, apiMode: workflowApiMode, channelId: baseConfig.imageChannelId };
     }
-    return { model: workflowModel, apiMode: workflow.config.apiMode || baseConfig.apiMode, channelId: workflow.config.imageChannelId || baseConfig.imageChannelId };
+    return { model: workflowModel, apiMode: workflowApiMode, channelId: workflow.config.imageChannelId || baseConfig.imageChannelId };
 }
 
 function buildRunConfig(baseConfig: AiConfig, workflowConfig: WorkflowGenerationConfig, runtime: { model: string; apiMode: AiConfig["apiMode"]; channelId: string }): AiConfig {

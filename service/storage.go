@@ -797,7 +797,7 @@ func normalizeDraftConfig(value any) map[string]any {
 		"systemPrompt":          "",
 		"promptTemplate":        "",
 		"negativePrompt":        "",
-		"apiMode":               "responses",
+		"apiMode":               "images",
 		"size":                  "auto",
 		"quality":               "high",
 		"count":                 "1",
@@ -814,6 +814,9 @@ func normalizeDraftConfig(value any) map[string]any {
 		if _, ok := config[key]; !ok {
 			config[key] = fallback
 		}
+	}
+	if config["apiMode"] != "responses" {
+		config["apiMode"] = "images"
 	}
 	return config
 }

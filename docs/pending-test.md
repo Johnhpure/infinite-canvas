@@ -10,8 +10,10 @@ description: 当前版本已实现但仍需人工验证的变更项
 - 首页 `/` 需要确认未登录时自动进入 `/login`，已登录时自动进入 `/image` 生图工作台。
 - 用户登录页需要确认只展示 Claude360 APIKEY 输入框，不再展示注册、用户名密码、Linux.do 或 OIDC 登录入口。
 - 使用 Claude360/NewAPI 创建的有效 APIKEY 需要确认可以登录；无效 APIKEY 需要确认提示失败且不会创建可用会话。
-- 使用没有 image 分组或 `gpt-image-2` 生图调用权限的 Claude360 APIKEY 登录时，需要确认提示用户更换有调用权限的 APIKEY。
+- NewAPI `/api/usage/token/` 需要确认返回当前 APIKEY 自身的 `group`；infinite-canvas 登录会先校验 `group === image`，非 image 分组 APIKEY 必须登录失败并提示更换有 image 分组调用权限的 APIKEY。
+- 使用没有 `gpt-image-2` 生图调用权限的 Claude360 APIKEY 登录时，需要确认提示用户更换有调用权限的 APIKEY。
 - 登录后发起 `gpt-image-2` 图片生成时，需要确认浏览器只请求 infinite-canvas `/api/v1/*`，由后端转发到 VPS 本机 Claude360/NewAPI，且后端转发请求带 `New-Api-Group: image`。
+- 创建/编辑工作流和 AI 创建工作流草稿需要确认默认接口模式为 Images API；只有用户明确选择或要求 Responses API 时才使用 Responses API。
 - 工作流 AI 创建和多图提示词生成需要确认默认文本模型为 `gpt-5.5`，并仍通过 Claude360 平台模型渠道调用。
 - Docker 部署需要确认 `.env` 中 `CLAUDE360_API_BASE_URL=http://host.docker.internal:3000` 能从 infinite-canvas 容器访问宿主机 NewAPI；如果两个服务放在同一个 compose network，则改成 `http://new-api:3000` 后复测。
 - 管理员需要确认 `/admin` 使用管理员账号密码登录，后台子路由未登录时跳回 `/admin?redirect=...`。

@@ -35,11 +35,18 @@ type claude360UsageResponse struct {
 	Code    bool `json:"code"`
 	Data    struct {
 		Name               string          `json:"name"`
+		Group              string          `json:"group"`
 		ModelLimits        map[string]bool `json:"model_limits"`
 		ModelLimitsEnabled bool            `json:"model_limits_enabled"`
 	} `json:"data"`
 	Message string `json:"message"`
 	Msg     string `json:"msg"`
+}
+
+type claude360TokenUsageInfo struct {
+	Group              string
+	ModelLimits        map[string]bool
+	ModelLimitsEnabled bool
 }
 
 type claude360ModelsResponse struct {
@@ -116,7 +123,14 @@ func claude360APIBaseURL() string {
 }
 
 func validateClaude360APIKey(baseURL string, apiKey string) ([]string, error) {
-	models, err := fetchClaude360Models(baseURL, apiKey)
+	usage, err := fetchClaude360TokenUsage(baseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
+	if !claude360TokenGroupIsImage(usage.Group) {
+		return nil, claude360ImageGroupPermissionError()
+	}
+	models, err := fetchClaude360Models(baseURL, apiKey, usage)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +140,7 @@ func validateClaude360APIKey(baseURL string, apiKey string) ([]string, error) {
 	return ensureClaude360RequiredModels(models), nil
 }
 
-func fetchClaude360Models(baseURL string, apiKey string) ([]string, error) {
+func fetchClaude360Models(baseURL string, apiKey string, usage claude360TokenUsageInfo) ([]string, error) {
 	endpoint := buildClaude360URL(baseURL, "/models")
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -151,25 +165,24 @@ func fetchClaude360Models(baseURL string, apiKey string) ([]string, error) {
 	if payload.Success != nil && !*payload.Success {
 		return nil, safeMessageError{message: firstNonEmpty(payload.Message, payload.Msg, errorMessage(payload), "Claude360 APIKEY 无效")}
 	}
-	return filterClaude360Models(baseURL, apiKey, payload), nil
+	return filterClaude360Models(payload, usage), nil
 }
 
-func filterClaude360Models(baseURL string, apiKey string, payload claude360ModelsResponse) []string {
+func filterClaude360Models(payload claude360ModelsResponse, usage claude360TokenUsageInfo) []string {
 	models := make([]string, 0, len(payload.Data))
 	for _, item := range payload.Data {
 		if id := strings.TrimSpace(item.ID); id != "" {
 			models = append(models, id)
 		}
 	}
-	limits, enabled := claude360TokenModelLimits(baseURL, apiKey)
-	if !enabled {
+	if !usage.ModelLimitsEnabled {
 		return models
 	}
-	if len(limits) == 0 {
+	if len(usage.ModelLimits) == 0 {
 		return []string{}
 	}
-	allowed := make(map[string]bool, len(limits))
-	for modelName := range limits {
+	allowed := make(map[string]bool, len(usage.ModelLimits))
+	for modelName := range usage.ModelLimits {
 		if strings.TrimSpace(modelName) != "" {
 			allowed[modelName] = true
 		}
@@ -183,28 +196,48 @@ func filterClaude360Models(baseURL string, apiKey string, payload claude360Model
 	return filtered
 }
 
-func claude360TokenModelLimits(baseURL string, apiKey string) (map[string]bool, bool) {
+func fetchClaude360TokenUsage(baseURL string, apiKey string) (claude360TokenUsageInfo, error) {
 	endpoint := strings.TrimRight(claude360RootURL(baseURL), "/") + "/api/usage/token/"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, false
+		return claude360TokenUsageInfo{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return nil, false
+		return claude360TokenUsageInfo{}, safeMessageError{message: "无法验证 Claude360 APIKEY 分组"}
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, false
-	}
 	var payload claude360UsageResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return claude360TokenUsageInfo{}, safeMessageError{message: "Claude360 APIKEY 分组返回异常"}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || (!payload.Code && !payload.Success) {
+		return claude360TokenUsageInfo{}, safeMessageError{message: firstNonEmpty(payload.Message, payload.Msg, "Claude360 APIKEY 无效")}
+	}
+	return claude360TokenUsageInfo{
+		Group:              strings.TrimSpace(payload.Data.Group),
+		ModelLimits:        payload.Data.ModelLimits,
+		ModelLimitsEnabled: payload.Data.ModelLimitsEnabled,
+	}, nil
+}
+
+func claude360TokenGroupIsImage(group string) bool {
+	return strings.EqualFold(strings.TrimSpace(group), Claude360ImageGroup)
+}
+
+func claude360ImageGroupPermissionError() error {
+	return safeMessageError{message: "当前 Claude360 APIKEY 没有 image 分组的生图调用权限，请更换有调用权限的 APIKEY"}
+}
+
+func claude360TokenModelLimits(baseURL string, apiKey string) (map[string]bool, bool) {
+	usage, err := fetchClaude360TokenUsage(baseURL, apiKey)
+	if err != nil {
 		return nil, false
 	}
-	return payload.Data.ModelLimits, payload.Data.ModelLimitsEnabled
+	return usage.ModelLimits, usage.ModelLimitsEnabled
 }
 
 func probeClaude360ImageGroupAccess(baseURL string, apiKey string) error {
@@ -225,7 +258,7 @@ func probeClaude360ImageGroupAccess(baseURL string, apiKey string) error {
 	defer resp.Body.Close()
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || claude360ImageProbeDenied(string(responseBody)) {
-		return safeMessageError{message: "当前 Claude360 APIKEY 没有 image 分组的生图调用权限，请更换有调用权限的 APIKEY"}
+		return claude360ImageGroupPermissionError()
 	}
 	if resp.StatusCode >= http.StatusInternalServerError || resp.StatusCode == http.StatusNotFound {
 		return safeMessageError{message: "无法验证 Claude360 image 分组权限"}
